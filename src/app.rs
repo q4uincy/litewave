@@ -7,6 +7,7 @@ use crate::spotify;
 use eframe::egui::{self, Align2, Color32, Key, Modifiers, Rect, Sense, TextStyle};
 use ipod::{IpodState, Node};
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::mpsc::{channel, Receiver, Sender},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -29,6 +30,8 @@ pub enum Action {
     CycleRepeat,
     SetIpod(bool),
     Library,
+    Rescan,
+    AddFiles,
     SpotifyWindow,
 }
 
@@ -66,11 +69,13 @@ pub struct App {
     sp_window: bool,
     sp_focus: bool,
     sp_status: String,
+    was_focused: bool,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         apply_theme(&cc.egui_ctx);
+        install_fallback_fonts(&cc.egui_ctx);
         let cfg = Config::load();
         let (player, error) = match Playback::new(cfg.volume) {
             Ok(p) => (Some(p), None),
@@ -109,6 +114,7 @@ impl App {
             sp_window: false,
             sp_focus: false,
             sp_status: String::new(),
+            was_focused: true,
         };
         let main = app.build_page(&Node::Main);
         app.ipod.stack.push(main);
@@ -129,11 +135,31 @@ impl App {
     // ---- library -----------------------------------------------------------
 
     fn start_scan(&mut self, dir: PathBuf, ctx: &egui::Context) {
-        self.scan_rx = Some(library::spawn_scan(dir.clone(), ctx.clone()));
+        self.scan_rx = Some(library::spawn_scan(dir.clone(), ctx.clone(), self.known()));
         self.scan_count = 0;
         self.list_is_local = true;
         self.cfg.last_folder = Some(dir);
         self.cfg_dirty = true;
+    }
+
+    fn known(&self) -> HashMap<PathBuf, Track> {
+        self.local
+            .iter()
+            .map(|t| (t.path.clone(), t.clone()))
+            .collect()
+    }
+
+    /// Re-scans the saved folder in the background without touching the active queue.
+    fn rescan(&mut self) {
+        if self.scan_rx.is_some() {
+            return;
+        }
+        let Some(dir) = self.cfg.last_folder.clone() else { return };
+        if !dir.is_dir() {
+            return;
+        }
+        self.scan_rx = Some(library::spawn_scan(dir, self.ctx.clone(), self.known()));
+        self.scan_count = 0;
     }
 
     fn poll_scan(&mut self) {
@@ -205,13 +231,18 @@ impl App {
         if dropped.is_empty() {
             return;
         }
+        self.add_paths(dropped, ctx);
+    }
+
+    /// Adds dropped/picked files (or scans a dropped folder) and plays the first new track.
+    fn add_paths(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
         let mut added = Vec::new();
-        for p in dropped {
+        for p in paths {
             if p.is_dir() {
                 self.start_scan(p, ctx);
                 return;
             }
-            if library::is_audio(&p) {
+            if library::is_audio(&p) && !self.local.iter().any(|t| t.path == p) {
                 added.push(library::read_track(&p));
             }
         }
@@ -503,6 +534,15 @@ impl App {
                 self.cfg_dirty = true;
             }
             Action::Library => self.use_local(),
+            Action::Rescan => self.rescan(),
+            Action::AddFiles => {
+                if let Some(paths) = rfd::FileDialog::new()
+                    .add_filter("Audio", library::EXTENSIONS)
+                    .pick_files()
+                {
+                    self.add_paths(paths, ctx);
+                }
+            }
             Action::SpotifyWindow => self.sp_window = true,
         }
     }
@@ -643,11 +683,25 @@ impl App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Open folder").clicked() {
+                if ui
+                    .button("Open folder")
+                    .on_hover_text("Pick the folder that holds your music. The picker only lists folders, not files.")
+                    .clicked()
+                {
                     actions.push(Action::OpenFolder);
+                }
+                if ui
+                    .button("Add songs")
+                    .on_hover_text("Pick individual audio files")
+                    .clicked()
+                {
+                    actions.push(Action::AddFiles);
                 }
                 if ui.button("Library").clicked() {
                     actions.push(Action::Library);
+                }
+                if ui.button("Rescan").clicked() {
+                    actions.push(Action::Rescan);
                 }
                 if ui.button("iPod mode").clicked() {
                     actions.push(Action::SetIpod(true));
@@ -666,7 +720,8 @@ impl App {
                 if self.scan_rx.is_some() {
                     ui.weak(format!("Scanning... {} tracks", self.scan_count));
                 } else {
-                    ui.weak(format!("{} tracks", self.filtered.len()));
+                    let n = self.filtered.len();
+                    ui.weak(format!("{} track{}", n, if n == 1 { "" } else { "s" }));
                 }
                 if let Some(err) = &self.error {
                     ui.colored_label(Color32::LIGHT_RED, err);
@@ -714,7 +769,11 @@ impl App {
                             } else {
                                 ui.visuals().text_color()
                             };
-                            let weak = ui.visuals().weak_text_color();
+                            let weak = if selected {
+                                Color32::from_rgb(222, 238, 234)
+                            } else {
+                                ui.visuals().weak_text_color()
+                            };
                             let cy = rect.center().y;
                             let col2 = rect.min.x + rect.width() * 0.55;
                             let right = rect.max.x - 8.0;
@@ -770,6 +829,11 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_scan();
         self.poll_sp();
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.was_focused {
+            self.rescan();
+        }
+        self.was_focused = focused;
         self.handle_drops(ctx);
         if self.player.as_ref().map_or(false, |p| p.finished()) {
             self.on_finished();
@@ -820,6 +884,39 @@ impl eframe::App for App {
         if self.player.as_ref().map_or(false, |p| p.is_playing()) {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
+    }
+}
+
+/// egui's built-in font has no CJK glyphs, so song titles in Japanese/Chinese/Korean show as boxes.
+/// Load whichever system fonts exist and use them as fallbacks.
+fn install_fallback_fonts(ctx: &egui::Context) {
+    let candidates = [
+        r"C:\Windows\Fonts\YuGothM.ttc",
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\malgun.ttf",
+        r"C:\Windows\Fonts\seguisym.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    ];
+    let mut fonts = egui::FontDefinitions::default();
+    let mut added = false;
+    for (i, path) in candidates.iter().enumerate() {
+        if let Ok(bytes) = std::fs::read(path) {
+            let name = format!("fallback{i}");
+            fonts
+                .font_data
+                .insert(name.clone(), egui::FontData::from_owned(bytes));
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().push(name.clone());
+            }
+            added = true;
+        }
+    }
+    if added {
+        ctx.set_fonts(fonts);
     }
 }
 
