@@ -39,6 +39,7 @@ pub enum Node {
 #[derive(Clone, Copy, PartialEq)]
 pub enum Cmd {
     ShuffleAll,
+    OpenFolder,
     ToggleShuffle,
     CycleRepeat,
     ClassicView,
@@ -186,6 +187,7 @@ impl App {
                     item("Artists", Kind::Open(Node::Artists)),
                     item("Albums", Kind::Open(Node::Albums)),
                     item("Songs", Kind::Open(Node::Songs)),
+                    item("Add music folder...", Kind::Run(Cmd::OpenFolder)),
                 ];
             }
             Node::Artists => {
@@ -253,6 +255,7 @@ impl App {
                         Kind::Run(Cmd::ToggleShuffle),
                     ),
                     item(&format!("Repeat: {rep}"), Kind::Run(Cmd::CycleRepeat)),
+                    item("Add music folder...", Kind::Run(Cmd::OpenFolder)),
                     item("Classic view", Kind::Run(Cmd::ClassicView)),
                     item("Spotify account", Kind::Run(Cmd::SpotifySetup)),
                 ];
@@ -469,6 +472,7 @@ impl App {
                 self.ipod_action(Action::CycleRepeat);
                 self.refresh_top();
             }
+            Cmd::OpenFolder => self.ipod_action(Action::OpenFolder),
             Cmd::ClassicView => self.ipod_action(Action::SetIpod(false)),
             Cmd::SpotifySetup => self.sp_window = true,
             Cmd::SpotifyDisconnect => self.disconnect_spotify(),
@@ -529,11 +533,12 @@ impl App {
             Some(pg) => {
                 let end = (pg.top + ROWS).min(pg.items.len());
                 let start = pg.top.min(end);
-                let rows: Vec<(String, bool, bool)> = pg.items[start..end]
+                let rows: Vec<(usize, String, bool, bool)> = pg.items[start..end]
                     .iter()
                     .enumerate()
                     .map(|(k, it)| {
                         (
+                            start + k,
                             it.label.clone(),
                             matches!(it.kind, Kind::Open(_)),
                             start + k == pg.sel,
@@ -552,6 +557,11 @@ impl App {
         let playing = self.player.as_ref().map_or(false, |p| p.is_playing());
         let vol = self.cfg.volume;
         let show_vol = self.ipod.vol_until.map_or(false, |t| Instant::now() < t);
+        let title = if self.scan_rx.is_some() {
+            format!("Scanning {}", self.scan_count)
+        } else {
+            title
+        };
 
         // Body and bezel.
         painter.rect_filled(body, 30.0 * s, Color32::from_rgb(232, 232, 236));
@@ -582,10 +592,17 @@ impl App {
         sp.rect_stroke(bat, 1.5 * s, Stroke::new(1.0, ink));
         sp.rect_filled(bat.shrink(2.0 * s), 0.5 * s, Color32::from_rgb(60, 170, 90));
 
+        let mut row_click: Option<usize> = None;
+        let mut screen_click = false;
+
         // Content.
         let top = head.max.y;
         let left = screen.min.x + 12.0 * s;
         if is_np {
+            let sr = ui.interact(screen, ui.id().with("ipod_screen"), Sense::click());
+            if sr.clicked() {
+                screen_click = true;
+            }
             match &np {
                 None => {
                     sp.text(
@@ -685,7 +702,7 @@ impl App {
                     sp.galley(pos2(left, top + 10.0 * s), g, Color32::from_rgb(180, 40, 40));
                 }
                 Load::Ready => {
-                    for (k, (label, chevron, selected)) in rows.iter().enumerate() {
+                    for (k, (idx, label, chevron, selected)) in rows.iter().enumerate() {
                         let r = Rect::from_min_size(
                             pos2(screen.min.x, top + k as f32 * 23.0 * s),
                             vec2(screen.width(), 23.0 * s),
@@ -713,6 +730,13 @@ impl App {
                                 FontId::proportional(13.0 * s),
                                 col,
                             );
+                        }
+                        let rr = ui.interact(r, ui.id().with(("ipod_row", k)), Sense::click());
+                        if rr.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if rr.clicked() {
+                            row_click = Some(*idx);
                         }
                     }
                 }
@@ -762,7 +786,7 @@ impl App {
         let resp = ui.interact(wheel_rect, ui.id().with("ipod_wheel"), Sense::click_and_drag());
         let mut moves: i32 = 0;
         if resp.dragged() {
-            if let Some(ptr) = resp.interact_pointer_pos() {
+            if let Some(ptr) = ui.input(|i| i.pointer.latest_pos()) {
                 let d = ptr - c;
                 if d.length() > r_in {
                     let ang = d.y.atan2(d.x);
@@ -808,7 +832,7 @@ impl App {
         // 0 select, 1 menu/back, 2 next, 3 play/pause, 4 previous
         let mut click: Option<u8> = None;
         if resp.clicked() {
-            if let Some(ptr) = resp.interact_pointer_pos() {
+            if let Some(ptr) = ui.input(|i| i.pointer.latest_pos()) {
                 let d = ptr - c;
                 let dist = d.length();
                 if dist <= r_in {
@@ -838,6 +862,15 @@ impl App {
             Some(3) => self.ipod_action(Action::Toggle),
             Some(4) => self.ipod_action(Action::Prev),
             _ => {}
+        }
+        if let Some(idx) = row_click {
+            if let Some(p) = self.ipod.stack.last_mut() {
+                p.sel = idx.min(p.items.len().saturating_sub(1));
+            }
+            self.ipod_select();
+        }
+        if screen_click {
+            self.ipod_action(Action::Toggle);
         }
     }
 }
