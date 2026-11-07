@@ -5,6 +5,7 @@ A tiny, fast, native music player. Rust + [egui](https://github.com/emilk/egui) 
 ## Features
 
 - Plays local files (mp3, flac, ogg, wav, m4a, aac); background folder scan with tag reading
+- **Themes**: presets, your own colors, and a wallpaper image behind the whole app; share themes as a small `.json` file
 - Virtualized track list and instant search
 - **iPod mode**: LCD menus (Music > Artists / Albums / Songs, Now Playing, Settings) and a click wheel you can drag, scroll, or click
 - Seek, volume, shuffle, repeat, previous-track history
@@ -22,6 +23,30 @@ sudo apt install pkg-config libasound2-dev
 cargo run --release                      # local player + iPod mode
 cargo run --release --features spotify   # plus Spotify
 ```
+
+## Themes
+
+Open **Themes** in the sidebar. Pick a preset, tweak the accent/background/panel/text colors, set panel opacity, wallpaper dim and roundness, and choose a wallpaper image (png, jpg, webp). You can also drop an image onto the window to use it as the wallpaper.
+
+**Save theme** writes `<name>.json` (and copies the wallpaper next to it) to the themes folder (**Open themes folder** in the window). To share a theme, send those two files; to install one, drop the `.json` onto the window or copy both files into the themes folder and press **Reload**.
+
+```json
+{
+  "name": "Sakura Night",
+  "author": "you",
+  "bg": "#150f13",
+  "panel": "#201519",
+  "text": "#fbe9f0",
+  "subtext": "#b99aa8",
+  "accent": "#ff7eb6",
+  "panel_alpha": 190,
+  "dim": 130,
+  "rounding": 10,
+  "background": "sakura-night.jpg"
+}
+```
+
+Every field is optional. Wallpapers are downscaled to at most 1280x720 when loaded (about 4 MB of RAM) and only still images are supported, which keeps memory use low.
 
 ## iPod mode
 
