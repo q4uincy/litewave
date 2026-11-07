@@ -1,6 +1,7 @@
 use eframe::egui;
 use lofty::prelude::*;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::mpsc::{channel, Receiver},
     time::Duration,
@@ -100,7 +101,12 @@ pub fn sort_tracks(tracks: &mut [Track]) {
 }
 
 /// Scans `root` on a background thread so the UI never blocks.
-pub fn spawn_scan(root: PathBuf, ctx: egui::Context) -> Receiver<ScanMsg> {
+/// Tracks already in `known` (matched by path) are reused instead of re-reading their tags.
+pub fn spawn_scan(
+    root: PathBuf,
+    ctx: egui::Context,
+    known: HashMap<PathBuf, Track>,
+) -> Receiver<ScanMsg> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         let mut tracks = Vec::new();
@@ -110,7 +116,11 @@ pub fn spawn_scan(root: PathBuf, ctx: egui::Context) -> Receiver<ScanMsg> {
             .filter_map(Result::ok)
         {
             if entry.file_type().is_file() && is_audio(entry.path()) {
-                tracks.push(read_track(entry.path()));
+                let track = match known.get(entry.path()) {
+                    Some(t) => t.clone(),
+                    None => read_track(entry.path()),
+                };
+                tracks.push(track);
                 if tracks.len() % 50 == 0 {
                     let _ = tx.send(ScanMsg::Progress(tracks.len()));
                     ctx.request_repaint();
