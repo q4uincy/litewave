@@ -10,7 +10,8 @@ A tiny, fast, native music player. Rust + [egui](https://github.com/emilk/egui) 
 - **iPod mode**: LCD menus (Music > Artists / Albums / Songs, Now Playing, Settings) and a click wheel you can drag, scroll, or click
 - Seek, volume, shuffle, repeat, previous-track history
 - Drag and drop a folder or files onto the window
-- **Optional Spotify** (build feature): browse your playlists, liked songs, saved albums and followed artists in the iPod menus, with built-in playback
+- Cover art from your files' embedded pictures and from Spotify, cached in small thumbnails
+- **Optional Spotify** (build feature): browse your playlists, liked songs, saved albums and followed artists in the main window or the iPod menus, with built-in playback
 
 ## Build
 
@@ -50,7 +51,7 @@ Every field is optional. Wallpapers are downscaled to at most 1280x720 when load
 
 ## iPod mode
 
-Click **iPod mode** in the classic view (or leave it enabled in Settings > Classic view to switch back).
+Click **iPod mode** in the sidebar. The window shrinks to just the iPod (borderless, draggable by the strip on top) with **Minimize**, **Full view** (back to the normal window) and **Close** buttons. Settings > Skin switches between Silver (Y2K), Black, Classic and Pink bodies. The current song's cover shows behind the menu and on Now Playing.
 
 | Input | Action |
 |---|---|
@@ -73,6 +74,7 @@ Things to know:
 - In Development Mode the Web API only returns tracks for playlists you own or collaborate on.
 - The refresh token is stored in plain text in your config directory (`litewave/config.json`). Use Settings > Disconnect Spotify to remove it.
 - Spotify volume follows your system volume; the litewave volume control affects local files only.
+- If a track will not play, the Spotify window shows the last librespot message and has an **Open log folder** button (`librespot.log`). Free accounts cannot stream through librespot.
 
 ## Layout
 
