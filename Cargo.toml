@@ -1,6 +1,6 @@
 [package]
 name = "litewave"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "A tiny, fast, native music player with an iPod mode and optional Spotify support"
 license = "MIT"
@@ -19,6 +19,7 @@ spotify = [
     "dep:webbrowser",
     "dep:urlencoding",
     "dep:vergen",
+    "dep:log",
 ]
 
 [dependencies]
@@ -43,6 +44,7 @@ urlencoding = { version = "2", optional = true }
 # Pin for librespot-core 0.8.0: its build script pulls vergen-gitcl 1.0.x, which needs vergen-lib 0.1.x,
 # but a fresh dependency resolve picks vergen 9.1.0 (vergen-lib 9.x) and the build script fails to compile.
 vergen = { version = "=9.0.6", optional = true }
+log = { version = "0.4", optional = true }
 
 [profile.release]
 opt-level = 3
