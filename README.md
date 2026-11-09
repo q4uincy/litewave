@@ -51,7 +51,7 @@ Every field is optional. Wallpapers are downscaled to at most 1280x720 when load
 
 ## iPod mode
 
-Click **iPod mode** in the sidebar. The window shrinks to just the iPod (borderless, draggable by the strip on top) with **Minimize**, **Full view** (back to the normal window) and **Close** buttons. Settings > Skin switches between Silver (Y2K), Black, Classic and Pink bodies. The current song's cover shows behind the menu and on Now Playing.
+Click **iPod mode** in the sidebar. The window shrinks to just the iPod (borderless, draggable by the strip on top) with **Minimize**, **Full view** (back to the normal window) and **Close** buttons. Settings > Skin switches between Silver (Y2K), Black, Classic and Pink bodies. Settings > Wallpaper picks a menu wallpaper for the dark skins (built-in Stardust, or **Add wallpaper...** for your own images, kept in `litewave/wallpapers` in your config folder), and Wallpaper dim keeps the text readable. Now Playing shows the song's cover.
 
 | Input | Action |
 |---|---|
@@ -64,17 +64,17 @@ Click **iPod mode** in the sidebar. The window shrinks to just the iPod (borderl
 ## Spotify (experimental)
 
 1. Build with `--features spotify`.
-2. Create an app at <https://developer.spotify.com/dashboard> and add the redirect URI `http://127.0.0.1:8898/callback`.
-3. In litewave open **Spotify** (classic view) or Settings > Spotify account, paste the app's Client ID, and click **Connect**.
+2. In litewave click **Connect Spotify** (sidebar). A browser tab opens once to approve the sign-in. No developer app or Client ID is needed.
+3. Browse Liked Songs, Playlists, Albums and Artists in the sidebar, or paste any playlist, album or artist link into the box at the top of the Spotify view.
 
 Things to know:
 
-- Each person uses their own Client ID. Spotify's Development Mode limits an app to 5 users, and the app owner needs Premium.
-- Playback needs a Premium account. It uses [librespot](https://github.com/librespot-org/librespot), an unofficial client library, so Spotify can change or block it at any time.
-- In Development Mode the Web API only returns tracks for playlists you own or collaborate on.
-- The refresh token is stored in plain text in your config directory (`litewave/config.json`). Use Settings > Disconnect Spotify to remove it.
+- Browsing works with any account. Playback needs Spotify Premium and uses [librespot](https://github.com/librespot-org/librespot).
+- Unofficial: litewave signs in with the same client ID librespot and other open-source players use, so Spotify can change or block it at any time. Spotify's own limits for small developer apps (5 users, own playlists only) do not apply, but shared rate limits can.
+- Private playlists and some playlists made by Spotify cannot be read.
+- If a track will not play, the Spotify window shows the last librespot messages and has an **Open log folder** button (`librespot.log`).
+- The refresh token is stored in plain text in your config directory (`litewave/config.json`). Use **Disconnect** to remove it.
 - Spotify volume follows your system volume; the litewave volume control affects local files only.
-- If a track will not play, the Spotify window shows the last librespot message and has an **Open log folder** button (`librespot.log`). Free accounts cannot stream through librespot.
 
 ## Layout
 
