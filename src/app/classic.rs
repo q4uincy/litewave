@@ -583,7 +583,15 @@ impl App {
                     let tall = ui.available_height() >= 720.0;
                     let mut content = |ui: &mut egui::Ui| {
                     ui.add_space(12.0);
-                    ui.label(egui::RichText::new("litewave").size(22.0).strong().color(accent));
+                    ui.horizontal(|ui| {
+                        if let Some(tex) = &self.logo_tex {
+                            ui.add(
+                                egui::Image::new(egui::load::SizedTexture::new(tex.id(), egui::vec2(28.0, 28.0)))
+                                    .rounding(7.0),
+                            );
+                        }
+                        ui.label(egui::RichText::new("litewave").size(22.0).strong().color(accent));
+                    });
                     ui.add_space(14.0);
                     if nav_button(ui, "Your Library", self.view == View::Library, accent).clicked() {
                         actions.push(Action::Library);
