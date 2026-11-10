@@ -45,39 +45,49 @@ impl App {
         ui.add_space(8.0);
         let mut install = None;
         let items = self.store_items.clone();
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
-            for item in items.iter() {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_width(220.0);
-                    let size = vec2(220.0, 165.0);
-                    let tex = if item.preview.starts_with("https://") {
-                        self.art.get(ctx, &ArtKey::UrlWide(item.preview.clone()), art::BIG)
-                    } else {
-                        None
-                    };
-                    match tex {
-                        Some(id) => {
-                            ui.add(egui::Image::new(egui::load::SizedTexture::new(id, size)).rounding(8.0));
-                        }
-                        None => {
-                            let (r, _) = ui.allocate_exact_size(size, Sense::hover());
-                            ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
-                        }
-                    }
-                    ui.label(egui::RichText::new(&item.name).strong());
-                    if !item.author.is_empty() {
-                        ui.weak(format!("by {}", item.author));
-                    }
-                    if !item.description.is_empty() {
-                        ui.label(egui::RichText::new(&item.description).size(12.0));
-                    }
-                    if ui.add_enabled(!self.store_busy, egui::Button::new("Download")).clicked() {
-                        install = Some(item.clone());
-                    }
-                });
-            }
-        });
+        // egui does not wrap whole cards, so lay them out in rows of as many as fit the width.
+        let gap = 12.0;
+        let card = 236.0;
+        let cols = (((ui.available_width() + gap) / (card + gap)).floor() as usize).max(1);
+        for row in items.chunks(cols) {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing = vec2(gap, gap);
+                for item in row.iter() {
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        // A frame inherits its parent's layout (left to right here), so stack
+                        // the card contents vertically on purpose.
+                        ui.vertical(|ui| {
+                            ui.set_width(220.0);
+                            let size = vec2(220.0, 165.0);
+                            let tex = if item.preview.starts_with("https://") {
+                                self.art.get(ctx, &ArtKey::UrlWide(item.preview.clone()), art::BIG)
+                            } else {
+                                None
+                            };
+                            match tex {
+                                Some(id) => {
+                                    ui.add(egui::Image::new(egui::load::SizedTexture::new(id, size)).rounding(8.0));
+                                }
+                                None => {
+                                    let (r, _) = ui.allocate_exact_size(size, Sense::hover());
+                                    ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
+                                }
+                            }
+                            ui.label(egui::RichText::new(&item.name).strong());
+                            if !item.author.is_empty() {
+                                ui.weak(format!("by {}", item.author));
+                            }
+                            if !item.description.is_empty() {
+                                ui.label(egui::RichText::new(&item.description).size(12.0));
+                            }
+                            if ui.add_enabled(!self.store_busy, egui::Button::new("Download")).clicked() {
+                                install = Some(item.clone());
+                            }
+                        });
+                    });
+                }
+            });
+        }
         if let Some(i) = install {
             self.store_install(i);
         }
