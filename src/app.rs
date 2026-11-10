@@ -201,6 +201,7 @@ pub struct App {
     bg_tex: Option<egui::TextureHandle>,
     bg_rx: Option<Receiver<Result<egui::ColorImage, String>>>,
     bg_path: Option<String>,
+    logo_tex: Option<egui::TextureHandle>,
     cjk_loaded: bool,
     cjk_needed: bool,
     fonts_check: bool,
@@ -313,6 +314,7 @@ impl App {
             bg_tex: None,
             bg_rx: None,
             bg_path: None,
+            logo_tex: load_logo(&cc.egui_ctx),
             cjk_loaded: false,
             cjk_needed: false,
             fonts_check: false,
@@ -1099,7 +1101,9 @@ impl App {
     /// Decodes the wallpaper on a worker thread. Larger images are downscaled (Lanczos) to the
     /// chosen quality: 1280x720 (~4 MB), 1920x1080 (~8 MB, default), 2560x1440 (~15 MB), 3840x2160 (~33 MB).
     fn load_background(&mut self, ctx: &egui::Context) {
-        let want = self.cfg.theme.background.clone();
+        // Key = path + blur, so changing the blur reloads the same image.
+        let blur = self.cfg.theme.blur.min(12);
+        let want = self.cfg.theme.background.as_ref().map(|p| format!("{p}\u{1}{blur}"));
         if want == self.bg_path {
             return;
         }
@@ -1109,7 +1113,8 @@ impl App {
                 self.bg_tex = None;
                 self.bg_rx = None;
             }
-            Some(path) => {
+            Some(key) => {
+                let path = key.split('\u{1}').next().unwrap_or_default().to_string();
                 let (tx, rx) = channel();
                 let ctx = ctx.clone();
                 let (max_w, max_h) = match self.cfg.wallpaper_quality {
@@ -1123,6 +1128,17 @@ impl App {
                         let img = image::open(&path).map_err(|e| e.to_string())?;
                         let img = if img.width() > max_w || img.height() > max_h {
                             img.resize(max_w, max_h, image::imageops::FilterType::Lanczos3)
+                        } else {
+                            img
+                        };
+                        // A blurred picture has no detail to lose, so blur a smaller copy (fast, low RAM).
+                        let img = if blur > 0 {
+                            let small = if img.width() > 960 || img.height() > 540 {
+                                img.resize(960, 540, image::imageops::FilterType::Triangle)
+                            } else {
+                                img
+                            };
+                            small.blur(blur as f32)
                         } else {
                             img
                         };
@@ -1169,7 +1185,28 @@ impl App {
             let v0 = (th - vis_h) / 2.0 / th;
             let uv = Rect::from_min_max(pos2(u0, v0), pos2(1.0 - u0, 1.0 - v0));
             painter.image(tex.id(), rect, uv, Color32::WHITE);
-            painter.rect_filled(rect, 0.0, Color32::from_black_alpha(self.cfg.theme.dim));
+            let tint = self.cfg.theme.tint();
+            painter.rect_filled(
+                rect,
+                0.0,
+                Color32::from_rgba_unmultiplied(tint.r(), tint.g(), tint.b(), self.cfg.theme.dim),
+            );
+        }
+        // Soft accent glow rising from the bottom edge (works with or without a wallpaper).
+        let glow = self.cfg.theme.glow;
+        if glow > 0 {
+            let a = self.cfg.theme.accent2();
+            let clear = Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), 0);
+            let strong = Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), glow);
+            let top = rect.max.y - rect.height() * 0.65;
+            let mut mesh = egui::Mesh::default();
+            mesh.colored_vertex(pos2(rect.min.x, top), clear);
+            mesh.colored_vertex(pos2(rect.max.x, top), clear);
+            mesh.colored_vertex(pos2(rect.max.x, rect.max.y), strong);
+            mesh.colored_vertex(pos2(rect.min.x, rect.max.y), strong);
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(0, 2, 3);
+            painter.add(egui::Shape::mesh(mesh));
         }
     }
 
@@ -2296,4 +2333,14 @@ mod tests {
         assert_eq!(fmt_time(3725.0), "1:02:05");
         assert_eq!(fmt_time(-3.0), "0:00");
     }
+}
+
+
+/// The litewave logo as a texture, for the sidebar header.
+fn load_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let img = image::load_from_memory(include_bytes!("../assets/icon.png")).ok()?;
+    let img = img.resize(96, 96, image::imageops::FilterType::Lanczos3).to_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+    Some(ctx.load_texture("litewave-logo", color, egui::TextureOptions::LINEAR))
 }
