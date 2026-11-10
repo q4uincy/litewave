@@ -240,6 +240,22 @@ impl App {
                     self.cfg.theme.rounding = round;
                     changed = true;
                 }
+                let mut blur = self.cfg.theme.blur as f32;
+                if ui
+                    .add(egui::Slider::new(&mut blur, 0.0..=12.0).text("Wallpaper blur"))
+                    .changed()
+                {
+                    self.cfg.theme.blur = blur.round() as u8;
+                    changed = true;
+                }
+                let mut glow = self.cfg.theme.glow as f32;
+                if ui
+                    .add(egui::Slider::new(&mut glow, 0.0..=160.0).text("Accent glow"))
+                    .changed()
+                {
+                    self.cfg.theme.glow = glow.round() as u8;
+                    changed = true;
+                }
 
                 ui.separator();
                 ui.horizontal(|ui| {
