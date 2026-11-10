@@ -67,6 +67,8 @@ Open **Themes** in the sidebar. Pick a preset, tweak the accent/background/panel
 }
 ```
 
+Extra BetterDiscord-style fields (all optional): `accent2` (links and glow color), `border` (dividers), `tint` (color laid over the wallpaper, strength = `dim`), `blur` (0-12, frosted wallpaper) and `glow` (0-255, soft `accent2` glow from the bottom edge).
+
 Every field is optional. Wallpapers are downscaled to at most 1280x720 when loaded (about 4 MB of RAM) and only still images are supported, which keeps memory use low.
 
 ## iPod mode
