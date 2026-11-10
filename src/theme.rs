@@ -25,6 +25,16 @@ pub struct Theme {
     pub rounding: f32,
     /// Wallpaper image path. Relative paths are resolved against the theme file.
     pub background: Option<String>,
+    /// Second accent ("#rrggbb"): links, the bottom glow. Empty = same as `accent`.
+    pub accent2: String,
+    /// Border / divider color. Empty = derived from panel and text.
+    pub border: String,
+    /// Color laid over the wallpaper (with `dim` as its strength). Empty = black.
+    pub tint: String,
+    /// 0-12. Gaussian blur on the wallpaper (a soft, frosted look).
+    pub blur: u8,
+    /// 0-255. Strength of a soft `accent2` glow rising from the bottom edge.
+    pub glow: u8,
 }
 
 impl Default for Theme {
@@ -46,6 +56,11 @@ fn preset(name: &str, bg: &str, panel: &str, text: &str, sub: &str, accent: &str
         dim: 120,
         rounding: 8.0,
         background: None,
+        accent2: String::new(),
+        border: String::new(),
+        tint: String::new(),
+        blur: 0,
+        glow: 0,
     }
 }
 
@@ -96,6 +111,16 @@ impl Theme {
         parse_hex(&self.accent).unwrap_or(Color32::from_rgb(46, 196, 182))
     }
 
+    pub fn accent2(&self) -> Color32 {
+        parse_hex(&self.accent2).unwrap_or_else(|| self.accent())
+    }
+    pub fn border(&self) -> Color32 {
+        parse_hex(&self.border).unwrap_or_else(|| mix(self.panel(), self.text(), 0.12))
+    }
+    pub fn tint(&self) -> Color32 {
+        parse_hex(&self.tint).unwrap_or(Color32::BLACK)
+    }
+
     pub fn is_light(&self) -> bool {
         let b = self.bg();
         (0.299 * b.r() as f32 + 0.587 * b.g() as f32 + 0.114 * b.b() as f32) > 140.0
@@ -115,7 +140,7 @@ impl Theme {
         v.override_text_color = Some(text);
         v.selection.bg_fill = mix(panel, accent, 0.45);
         v.selection.stroke = Stroke::new(1.0, accent);
-        v.hyperlink_color = accent;
+        v.hyperlink_color = self.accent2();
 
         let r = Rounding::same(self.rounding.clamp(0.0, 20.0));
         let base = mix(panel, text, 0.08);
@@ -138,7 +163,8 @@ impl Theme {
             w.bg_stroke = Stroke::NONE;
         }
         v.window_rounding = Rounding::same((self.rounding * 1.5).clamp(0.0, 28.0));
-        v.window_stroke = Stroke::new(1.0, mix(panel, text, 0.12));
+        v.window_stroke = Stroke::new(1.0, self.border());
+        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, self.border());
         ctx.set_visuals(v);
     }
 }
@@ -248,6 +274,14 @@ mod tests {
             assert!(parse_hex(&t.bg).is_some(), "{}", t.name);
             assert!(parse_hex(&t.accent).is_some(), "{}", t.name);
         }
+    }
+
+    #[test]
+    fn new_fields_are_optional() {
+        let t: Theme = serde_json::from_str(r##"{"name":"x","glow":90,"blur":6,"tint":"#102030"}"##).unwrap();
+        assert_eq!(t.glow, 90);
+        assert_eq!(t.tint(), Color32::from_rgb(0x10, 0x20, 0x30));
+        assert_eq!(t.accent2(), t.accent());
     }
 
     #[test]
