@@ -668,7 +668,7 @@ impl Client {
 
     pub fn artist_albums(&self, id: &str) -> Result<Vec<Entry>, String> {
         let items = self.collect(
-            format!("{API}/artists/{id}/albums?include_groups=album,single&limit=50"),
+            format!("{API}/artists/{id}/albums?include_groups=album,single&limit=10"),
             None,
         )?;
         Ok(items
