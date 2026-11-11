@@ -15,6 +15,8 @@ taskkill /f /im litewave.exe >nul 2>&1
 
 rmdir /s /q "%APPDATA%\litewave" >nul 2>&1
 rmdir /s /q "%LOCALAPPDATA%\litewave" >nul 2>&1
+cmdkey /delete:spotify_refresh.litewave >nul 2>&1
+cmdkey /delete:spotify_browse_refresh.litewave >nul 2>&1
 echo Settings and cache removed.
 
 if not exist "%APPDIR%unins000.exe" goto missing
