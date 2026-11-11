@@ -37,6 +37,7 @@ pub struct Root {
 
 impl Root {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::single::watch(&cc.egui_ctx);
         let (tx, rx) = channel();
         let mut state = State::Dismissed;
         if cfg!(windows) {
