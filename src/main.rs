@@ -7,6 +7,8 @@ mod library;
 mod lyrics;
 mod mediakeys;
 mod player;
+mod resume;
+mod single;
 mod spotify;
 mod store;
 mod theme;
@@ -44,6 +46,10 @@ fn main() -> eframe::Result<()> {
         let bt = std::backtrace::Backtrace::force_capture();
         report(&format!("litewave crashed:\n{info}\n\n{bt}"));
     }));
+    // Only one litewave window: a second start brings the first to the front and exits.
+    if single::start().is_err() {
+        return Ok(());
+    }
     // Try OpenGL first. If the PC has no usable OpenGL (e.g. only the Windows "Basic Display
     // Adapter"), retry with wgpu, which uses DirectX / Vulkan instead.
     let make_options = |renderer: eframe::Renderer| {
