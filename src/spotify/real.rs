@@ -63,6 +63,30 @@ struct Tokens {
     expires: Instant,
 }
 
+/// Spotify explains most errors in the response body, e.g. {"error":{"status":400,"message":"..."}}.
+fn api_message(resp: ureq::Response) -> String {
+    let body = resp.into_string().unwrap_or_default();
+    serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v["error"]["message"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| v["error_description"].as_str().map(|s| s.to_string()))
+                .or_else(|| v["error"].as_str().map(|s| s.to_string()))
+        })
+        .unwrap_or_default()
+}
+
+fn api_error(code: u16, resp: ureq::Response) -> String {
+    let m = api_message(resp);
+    if m.is_empty() {
+        format!("Spotify API error {code}")
+    } else {
+        format!("Spotify API error {code}: {m}")
+    }
+}
+
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(30))
@@ -338,8 +362,8 @@ impl Client {
                 Err(ureq::Error::Status(404, _)) => {
                     return Err("Spotify API error 404: that item was not found (it may have been removed).".to_string())
                 }
-                Err(ureq::Error::Status(code, _)) => {
-                    return Err(format!("Spotify API error {code}"))
+                Err(ureq::Error::Status(code, r)) => {
+                    return Err(api_error(code, r))
                 }
                 Err(e) => return Err(format!("Network error: {e}")),
             }
@@ -395,7 +419,7 @@ impl Client {
             Err(ureq::Error::Status(403, _)) => Err("Spotify refused the change (403). You can only edit playlists you own. If this is your first edit, open the Spotify window and press Sign in again so litewave can ask for edit permission.".to_string()),
             Err(ureq::Error::Status(401, _)) => Err("Spotify sign-in expired. Open the Spotify window and sign in again.".to_string()),
             Err(ureq::Error::Status(429, _)) => Err("Spotify is busy (rate limit). Try again in a minute.".to_string()),
-            Err(ureq::Error::Status(code, _)) => Err(format!("Spotify API error {code}")),
+            Err(ureq::Error::Status(code, r)) => Err(api_error(code, r)),
             Err(e) => Err(format!("Network error: {e}")),
         }
     }
@@ -686,7 +710,7 @@ impl log::Log for SpLogger {
         let line = format!("[{}] {}: {}", r.level(), r.target(), r.args());
         if let Ok(mut lines) = LOG_LINES.lock() {
             lines.push(line.clone());
-            if lines.len() > 8 {
+            if lines.len() > 14 {
                 lines.remove(0);
             }
         }
@@ -717,8 +741,18 @@ pub fn last_log() -> String {
     LOG_LINES
         .lock()
         .map(|l| {
-            let n = l.len();
-            l[n.saturating_sub(3)..].join("  |  ")
+            // Newest first, skipping exact repeats (the retry prints each error twice).
+            let mut out: Vec<&str> = Vec::new();
+            for line in l.iter().rev() {
+                if !out.contains(&line.as_str()) {
+                    out.push(line.as_str());
+                }
+                if out.len() == 5 {
+                    break;
+                }
+            }
+            out.reverse();
+            out.join("  |  ")
         })
         .unwrap_or_default()
 }
