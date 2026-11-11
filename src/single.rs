@@ -78,7 +78,7 @@ pub fn watch(ctx: &egui::Context) {
             let Ok(mut s) = stream else { continue };
             let _ = s.set_read_timeout(Some(Duration::from_millis(1000)));
             let mut data = Vec::new();
-            let _ = s.by_ref().take(64 * 1024).read_to_end(&mut data);
+            let _ = Read::by_ref(&mut s).take(64 * 1024).read_to_end(&mut data);
             let text = String::from_utf8_lossy(&data).into_owned();
             let mut lines = text.lines();
             let first = lines.next().unwrap_or("");
