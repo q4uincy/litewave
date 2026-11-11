@@ -681,6 +681,9 @@ impl App {
                             if nav_button(ui, "Spotify account", self.view == View::Account, accent).clicked() {
                                 actions.push(Action::SpotifyWindow);
                             }
+                            if nav_button(ui, "Settings", self.view == View::Settings, accent).clicked() {
+                                actions.push(Action::Settings);
+                            }
                         });
                     } else {
                         ui.add_space(14.0);
@@ -689,6 +692,9 @@ impl App {
                         }
                         if nav_button(ui, "Themes", self.view == View::Themes, accent).clicked() {
                             actions.push(Action::Themes);
+                        }
+                        if nav_button(ui, "Settings", self.view == View::Settings, accent).clicked() {
+                            actions.push(Action::Settings);
                         }
                         if nav_button(ui, "Report a bug", false, accent).clicked() {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(BUG_URL));
@@ -739,6 +745,9 @@ impl App {
                     }
                     if ui.button("Themes").clicked() {
                         actions.push(Action::Themes);
+                    }
+                    if ui.button("Settings").clicked() {
+                        actions.push(Action::Settings);
                     }
                     if ui.button("Spotify").clicked() {
                         if self.sp.is_some() {
@@ -803,6 +812,13 @@ impl App {
                             });
                         });
                     }
+                });
+                return;
+            }
+
+            if self.view == View::Settings {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    self.settings_page(ui, actions);
                 });
                 return;
             }
