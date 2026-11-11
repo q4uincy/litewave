@@ -299,6 +299,12 @@ impl Playback {
                         let last = spotify::last_log();
                         msgs.push(if last.contains("INVALID_CREDENTIALS") {
                             "Spotify rejected this sign-in for playback. Open the Spotify window and click Sign in again.".to_string()
+                        } else if last.contains("Symphonia")
+                            || last.contains("Unable to read audio")
+                            || last.contains("decryption key")
+                            || last.contains("audio key")
+                        {
+                            format!("Spotify sent audio that litewave could not open. This often means the account is not Spotify Premium (free accounts cannot stream here) or Spotify refused the decryption key. Details: {last}")
                         } else if last.is_empty() {
                             "Spotify could not play this track (Premium is required, and some tracks are region-locked).".to_string()
                         } else {
