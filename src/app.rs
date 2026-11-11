@@ -240,6 +240,9 @@ pub struct App {
     lyrics_key: String,
     /// The lyric line the main window last scrolled to.
     lyric_shown: Option<usize>,
+    /// Last local song + position from the previous run (restored once the library is scanned).
+    resume: Option<(std::path::PathBuf, f32)>,
+    resume_saved: Instant,
 }
 
 impl App {
@@ -344,6 +347,8 @@ impl App {
             lyrics_rx: None,
             lyrics_key: String::new(),
             lyric_shown: None,
+            resume: crate::resume::load(),
+            resume_saved: Instant::now(),
         };
         app.apply_theme(&cc.egui_ctx);
         app.load_background(&cc.egui_ctx);
@@ -417,6 +422,20 @@ impl App {
                 self.refilter();
                 self.current = current_path
                     .and_then(|p| self.tracks.iter().position(|t| t.path == p));
+            }
+            // Continue where the last run stopped (paused, at the saved position).
+            if self.list_is_local && self.current.is_none() && self.now.is_none() {
+                if let Some((path, pos)) = self.resume.take() {
+                    if let Some(i) = self.tracks.iter().position(|t| t.path == path) {
+                        let track = self.tracks[i].clone();
+                        if let Some(p) = self.player.as_mut() {
+                            if p.load(&track, Duration::from_secs_f32(pos), false).is_ok() {
+                                self.now = Some(track);
+                                self.current = Some(i);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2194,6 +2213,16 @@ impl eframe::App for App {
         if want != self.window_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(want.clone()));
             self.window_title = want;
+        }
+
+        // Remember the local song and position every few seconds.
+        if self.resume_saved.elapsed() >= Duration::from_secs(5) {
+            self.resume_saved = Instant::now();
+            if let Some(t) = &self.now {
+                if t.spotify_id.is_none() && t.yt_id.is_none() && !t.path.as_os_str().is_empty() {
+                    crate::resume::save(&t.path, self.position_secs());
+                }
+            }
         }
 
         // Debounced config save (not while a slider is being dragged).
