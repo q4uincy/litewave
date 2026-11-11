@@ -6,6 +6,8 @@
 //! starts litewave again.
 
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
@@ -14,7 +16,31 @@ use eframe::egui;
 const REPO: &str = "q4uincy/litewave";
 const ASSET: &str = "litewave-setup.exe";
 
+static CHECK_REQUEST: AtomicBool = AtomicBool::new(false);
+static STATUS: Mutex<String> = Mutex::new(String::new());
+
+/// Settings > Updates: ask for a check now (handled by `Root` on the next frame).
+pub fn request_check() {
+    set_status("Checking for updates...");
+    CHECK_REQUEST.store(true, Ordering::SeqCst);
+}
+
+/// The text shown under the "Check for updates" button.
+pub fn status() -> String {
+    STATUS.lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+fn set_status(s: &str) {
+    if let Ok(mut g) = STATUS.lock() {
+        *g = s.to_string();
+    }
+}
+
+/// (version, installer url, release notes)
+type Found = (String, String, String);
+
 enum Msg {
+    Manual(Result<Option<Found>, String>),
     Available { version: String, url: String, notes: String },
     Downloaded(Result<(), String>),
 }
@@ -55,6 +81,14 @@ impl Root {
     }
 
     fn show_update_box(&mut self, ctx: &egui::Context) {
+        if CHECK_REQUEST.swap(false, Ordering::SeqCst) {
+            let tx = self.tx.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Manual(fetch(true)));
+                ctx.request_repaint();
+            });
+        }
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Available { version, url, notes } => {
@@ -62,6 +96,14 @@ impl Root {
                         self.state = State::Available { version, url, notes };
                     }
                 }
+                Msg::Manual(Ok(Some((version, url, notes)))) => {
+                    set_status(&format!("litewave {version} is available."));
+                    if cfg!(windows) && !matches!(self.state, State::Downloading) {
+                        self.state = State::Available { version, url, notes };
+                    }
+                }
+                Msg::Manual(Ok(None)) => set_status("You're up to date."),
+                Msg::Manual(Err(e)) => set_status(&e),
                 Msg::Downloaded(Ok(())) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 Msg::Downloaded(Err(e)) => self.state = State::Failed(e),
             }
@@ -182,6 +224,12 @@ fn skip_version(version: &str) {
 }
 
 fn check() -> Option<Msg> {
+    let (version, url, notes) = fetch(false).ok().flatten()?;
+    Some(Msg::Available { version, url, notes })
+}
+
+/// Asks GitHub for the latest release. `Ok(None)` = nothing newer (or skipped, unless `manual`).
+fn fetch(manual: bool) -> Result<Option<Found>, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
         .user_agent(concat!("litewave/", env!("CARGO_PKG_VERSION")))
@@ -190,26 +238,28 @@ fn check() -> Option<Msg> {
         .get(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
         .set("Accept", "application/vnd.github+json")
         .call()
-        .ok()?
+        .map_err(|e| format!("Could not reach GitHub: {e}"))?
         .into_json()
-        .ok()?;
-    let tag = release["tag_name"].as_str()?;
+        .map_err(|e| e.to_string())?;
+    let tag = release["tag_name"].as_str().ok_or("No release found.")?;
     if !is_newer(tag, env!("CARGO_PKG_VERSION")) {
-        return None;
+        return Ok(None);
     }
     let version = tag.trim_start_matches('v').to_string();
     let skipped = skip_file().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
-    if skipped.trim() == version {
-        return None;
+    if !manual && skipped.trim() == version {
+        return Ok(None);
     }
     let notes: String = release["body"].as_str().unwrap_or("").chars().take(700).collect();
     let url = release["assets"]
-        .as_array()?
-        .iter()
-        .find(|a| a["name"].as_str() == Some(ASSET))?["browser_download_url"]
-        .as_str()?
-        .to_string();
-    Some(Msg::Available { version, url, notes })
+        .as_array()
+        .and_then(|a| a.iter().find(|a| a["name"].as_str() == Some(ASSET)))
+        .and_then(|a| a["browser_download_url"].as_str())
+        .map(String::from);
+    match url {
+        Some(url) => Ok(Some((version, url, notes))),
+        None => Err(format!("litewave {version} is out, but its installer is not uploaded yet.")),
+    }
 }
 
 fn download_and_run(url: &str) -> Result<(), String> {
