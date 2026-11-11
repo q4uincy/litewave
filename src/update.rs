@@ -15,13 +15,13 @@ const REPO: &str = "q4uincy/litewave";
 const ASSET: &str = "litewave-setup.exe";
 
 enum Msg {
-    Available { version: String, url: String },
+    Available { version: String, url: String, notes: String },
     Downloaded(Result<(), String>),
 }
 
 enum State {
     Idle,
-    Available { version: String, url: String },
+    Available { version: String, url: String, notes: String },
     Downloading,
     Failed(String),
     Dismissed,
@@ -57,9 +57,9 @@ impl Root {
     fn show_update_box(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Msg::Available { version, url } => {
+                Msg::Available { version, url, notes } => {
                     if matches!(self.state, State::Idle) {
-                        self.state = State::Available { version, url };
+                        self.state = State::Available { version, url, notes };
                     }
                 }
                 Msg::Downloaded(Ok(())) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -72,6 +72,7 @@ impl Root {
 
         let mut start: Option<String> = None;
         let mut dismiss = false;
+        let mut skip: Option<String> = None;
         egui::Area::new(egui::Id::new("litewave_update_box"))
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -14.0))
             .order(egui::Order::Foreground)
@@ -79,14 +80,22 @@ impl Root {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_max_width(300.0);
                     match &self.state {
-                        State::Available { version, url } => {
+                        State::Available { version, url, notes } => {
                             ui.label(format!("litewave {version} is available"));
+                            if !notes.trim().is_empty() {
+                                ui.collapsing("What's new", |ui| {
+                                    ui.label(notes.as_str());
+                                });
+                            }
                             ui.horizontal(|ui| {
                                 if ui.button("Update now").clicked() {
                                     start = Some(url.clone());
                                 }
                                 if ui.button("Later").clicked() {
                                     dismiss = true;
+                                }
+                                if ui.button("Skip this version").clicked() {
+                                    skip = Some(version.clone());
                                 }
                             });
                         }
@@ -107,7 +116,10 @@ impl Root {
                 });
             });
 
-        if let Some(url) = start {
+        if let Some(v) = skip {
+            skip_version(&v);
+            self.state = State::Dismissed;
+        } else if let Some(url) = start {
             self.state = State::Downloading;
             let tx = self.tx.clone();
             let ctx = ctx.clone();
@@ -124,6 +136,14 @@ impl Root {
 
 impl eframe::App for Root {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Files opened with litewave (Open with, command line) or dropped onto the window.
+        let mut files = crate::single::take_opened();
+        files.extend(ctx.input(|i| {
+            i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect::<Vec<_>>()
+        }));
+        if !files.is_empty() {
+            self.app.open_paths(files);
+        }
         self.app.update(ctx, frame);
         self.show_update_box(ctx);
     }
@@ -148,6 +168,19 @@ fn is_newer(latest: &str, current: &str) -> bool {
     parse_version(latest) > parse_version(current)
 }
 
+fn skip_file() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("litewave").join("skipped_update.txt"))
+}
+
+fn skip_version(version: &str) {
+    if let Some(f) = skip_file() {
+        if let Some(dir) = f.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(f, version);
+    }
+}
+
 fn check() -> Option<Msg> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
@@ -164,13 +197,19 @@ fn check() -> Option<Msg> {
     if !is_newer(tag, env!("CARGO_PKG_VERSION")) {
         return None;
     }
+    let version = tag.trim_start_matches('v').to_string();
+    let skipped = skip_file().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
+    if skipped.trim() == version {
+        return None;
+    }
+    let notes: String = release["body"].as_str().unwrap_or("").chars().take(700).collect();
     let url = release["assets"]
         .as_array()?
         .iter()
         .find(|a| a["name"].as_str() == Some(ASSET))?["browser_download_url"]
         .as_str()?
         .to_string();
-    Some(Msg::Available { version: tag.trim_start_matches('v').to_string(), url })
+    Some(Msg::Available { version, url, notes })
 }
 
 fn download_and_run(url: &str) -> Result<(), String> {
