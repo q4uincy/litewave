@@ -26,6 +26,11 @@ jobs:
       - name: Linux build deps
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev libssl-dev
+      - name: Use the tag as the app version (so the in-app update check works)
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build (Windows, static runtime)
@@ -48,3 +53,12 @@ jobs:
       - name: Build installer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          iscc /DAppVersion=$version installer\litewave-setup.iss
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.asset }}
+            dist/litewave-setup.exe
+          generate_release_notes: true
