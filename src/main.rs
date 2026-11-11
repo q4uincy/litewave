@@ -10,6 +10,7 @@ mod player;
 mod spotify;
 mod store;
 mod theme;
+mod update;
 mod ytdlp;
 
 /// The release build has no console, so a crash would be silent. Write it to a file and show it.
@@ -62,13 +63,13 @@ fn main() -> eframe::Result<()> {
     let mut res = eframe::run_native(
         "litewave",
         make_options(eframe::Renderer::Glow),
-        Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+        Box::new(|cc| Ok(Box::new(update::Root::new(cc)))),
     );
     if res.is_err() {
         res = eframe::run_native(
             "litewave",
             make_options(eframe::Renderer::Wgpu),
-            Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+            Box::new(|cc| Ok(Box::new(update::Root::new(cc)))),
         );
     }
     if let Err(e) = &res {
