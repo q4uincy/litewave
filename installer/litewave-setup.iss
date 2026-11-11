@@ -47,6 +47,8 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+; After an in-app update (silent install) start litewave again
+Filename: "{app}\{#AppExe}"; Flags: nowait skipifnotsilent
 
 [Code]
 // On uninstall, offer to also remove settings, cache and the saved Spotify sign-in.
