@@ -373,6 +373,22 @@ impl App {
         let bg = self.cfg.theme.bg();
         let track_col = mix(self.cfg.theme.panel(), text, 0.25);
 
+        // Esc / Backspace / Alt+Left go back one Spotify page (not while typing or in a dialog).
+        if self.view == View::Spotify
+            && self.sp_nav.len() > 1
+            && self.dialog.is_none()
+            && !ctx.wants_keyboard_input()
+        {
+            let back = ctx.input(|i| {
+                i.key_pressed(egui::Key::Escape)
+                    || i.key_pressed(egui::Key::Backspace)
+                    || (i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft))
+            });
+            if back {
+                actions.push(Action::SpBack);
+            }
+        }
+
         let (title, artist, duration) = self
             .now
             .as_ref()
