@@ -370,6 +370,28 @@ impl App {
 
     // ---- library -----------------------------------------------------------
 
+    /// Plays files (or folders of music) opened with litewave or dropped onto the window.
+    pub fn open_paths(&mut self, paths: Vec<PathBuf>) {
+        let mut files: Vec<PathBuf> = Vec::new();
+        for p in paths {
+            if p.is_dir() {
+                for e in walkdir::WalkDir::new(&p).into_iter().flatten() {
+                    if e.file_type().is_file() && crate::library::is_audio(e.path()) {
+                        files.push(e.path().to_path_buf());
+                    }
+                }
+            } else if crate::library::is_audio(&p) {
+                files.push(p);
+            }
+        }
+        if files.is_empty() {
+            return;
+        }
+        files.sort();
+        let list: Vec<Track> = files.iter().map(|f| crate::library::read_track(f)).collect();
+        self.set_list(list, 0, false);
+    }
+
     fn start_scan(&mut self, dir: PathBuf, ctx: &egui::Context) {
         self.scan_rx = Some(library::spawn_scan(dir.clone(), ctx.clone(), self.known()));
         self.scan_count = 0;
