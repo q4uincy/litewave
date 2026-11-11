@@ -88,6 +88,53 @@ impl Default for Config {
     }
 }
 
+/// Spotify sign-in tokens live in Windows Credential Manager instead of config.json.
+/// If the vault is unavailable, they stay in config.json as before.
+#[cfg(windows)]
+mod vault {
+    pub fn get(name: &str) -> Option<String> {
+        keyring::Entry::new("litewave", name).ok()?.get_password().ok()
+    }
+    pub fn set(name: &str, value: &str) -> bool {
+        keyring::Entry::new("litewave", name)
+            .and_then(|e| e.set_password(value))
+            .is_ok()
+    }
+    pub fn delete(name: &str) {
+        if let Ok(e) = keyring::Entry::new("litewave", name) {
+            let _ = e.delete_credential();
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod vault {
+    pub fn get(_name: &str) -> Option<String> {
+        None
+    }
+    pub fn set(_name: &str, _value: &str) -> bool {
+        false
+    }
+    pub fn delete(_name: &str) {}
+}
+
+/// Moves a token into the vault. Returns what should still be written to config.json.
+fn stash(name: &str, token: &Option<String>) -> Option<String> {
+    match token {
+        Some(t) => {
+            if vault::set(name, t) {
+                None
+            } else {
+                Some(t.clone())
+            }
+        }
+        None => {
+            vault::delete(name);
+            None
+        }
+    }
+}
+
 fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("litewave").join("config.json"))
 }
@@ -107,10 +154,18 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        config_path()
+        let mut cfg: Config = config_path()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // A token still in config.json (older versions) is moved to the vault on the next save.
+        if cfg.spotify_refresh.is_none() {
+            cfg.spotify_refresh = vault::get("spotify_refresh");
+        }
+        if cfg.spotify_browse_refresh.is_none() {
+            cfg.spotify_browse_refresh = vault::get("spotify_browse_refresh");
+        }
+        cfg
     }
 
     pub fn save(&self) {
@@ -118,7 +173,10 @@ impl Config {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Ok(json) = serde_json::to_string_pretty(self) {
+        let mut copy = self.clone();
+        copy.spotify_refresh = stash("spotify_refresh", &self.spotify_refresh);
+        copy.spotify_browse_refresh = stash("spotify_browse_refresh", &self.spotify_browse_refresh);
+        if let Ok(json) = serde_json::to_string_pretty(&copy) {
             let _ = std::fs::write(path, json);
         }
     }
