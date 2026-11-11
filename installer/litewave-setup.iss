@@ -53,6 +53,8 @@ Filename: "{app}\{#AppExe}"; Flags: nowait skipifnotsilent
 [Code]
 // On uninstall, offer to also remove settings, cache and the saved Spotify sign-in.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
@@ -61,6 +63,8 @@ begin
     begin
       DelTree(ExpandConstant('{userappdata}\litewave'), True, True, True);
       DelTree(ExpandConstant('{localappdata}\litewave'), True, True, True);
+      Exec(ExpandConstant('{cmd}'), '/C cmdkey /delete:spotify_refresh.litewave', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec(ExpandConstant('{cmd}'), '/C cmdkey /delete:spotify_browse_refresh.litewave', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;
   end;
 end;
