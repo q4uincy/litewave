@@ -45,7 +45,15 @@ jobs:
         run: |
           cp target/release/litewave .
           tar -czf ${{ matrix.asset }} litewave README.md LICENSE
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          iscc /DAppVersion=$version installer\litewave-setup.iss
       - uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.asset }}
+          files: |
+            ${{ matrix.asset }}
+            dist/litewave-setup.exe
           generate_release_notes: true
