@@ -43,24 +43,40 @@ fn main() -> eframe::Result<()> {
         let bt = std::backtrace::Backtrace::force_capture();
         report(&format!("litewave crashed:\n{info}\n\n{bt}"));
     }));
-    let mut viewport = eframe::egui::ViewportBuilder::default()
-        .with_title("litewave")
-        .with_inner_size([1000.0, 640.0])
-        .with_min_inner_size([420.0, 480.0]);
-    if let Some(icon) = app_icon() {
-        viewport = viewport.with_icon(icon);
-    }
-    let options = eframe::NativeOptions {
-        viewport,
-        ..Default::default()
+    // Try OpenGL first. If the PC has no usable OpenGL (e.g. only the Windows "Basic Display
+    // Adapter"), retry with wgpu, which uses DirectX / Vulkan instead.
+    let make_options = |renderer: eframe::Renderer| {
+        let mut viewport = eframe::egui::ViewportBuilder::default()
+            .with_title("litewave")
+            .with_inner_size([1000.0, 640.0])
+            .with_min_inner_size([420.0, 480.0]);
+        if let Some(icon) = app_icon() {
+            viewport = viewport.with_icon(icon);
+        }
+        eframe::NativeOptions {
+            viewport,
+            renderer,
+            ..Default::default()
+        }
     };
-    let res = eframe::run_native(
+    let mut res = eframe::run_native(
         "litewave",
-        options,
+        make_options(eframe::Renderer::Glow),
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     );
+    if res.is_err() {
+        res = eframe::run_native(
+            "litewave",
+            make_options(eframe::Renderer::Wgpu),
+            Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+        );
+    }
     if let Err(e) = &res {
-        report(&format!("litewave could not start its window:\n{e}"));
+        report(&format!(
+            "litewave could not start its window:\n{e}\n\n\
+             Your graphics driver may be missing or too old. Install the latest driver for your \
+             graphics card (Intel, NVIDIA or AMD) from your PC maker's website, then try again."
+        ));
     }
     res
 }
