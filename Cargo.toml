@@ -24,7 +24,8 @@ spotify = [
 ]
 
 [dependencies]
-eframe = "0.29"
+# glow (OpenGL) is tried first; wgpu (DirectX/Vulkan) is the fallback when OpenGL is missing.
+eframe = { version = "0.29", features = ["wgpu"] }
 rodio = { version = "0.19", default-features = false, features = ["symphonia-all"] }
 lofty = "0.21"
 walkdir = "2"
