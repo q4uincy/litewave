@@ -7,6 +7,9 @@ const OFF: &str = "This build has no Spotify support. Rebuild with: cargo run --
 pub const SHARED_CLIENT_ID: &str = "";
 pub const REDIRECT_URI: &str = "";
 
+/// No-op without Spotify support.
+pub fn set_playback_options(_quality: u8, _normalise: bool, _gapless: bool) {}
+
 pub fn last_log() -> String {
     String::new()
 }
