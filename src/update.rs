@@ -114,8 +114,9 @@ impl Root {
             return;
         }
 
-        let mut start: Option<String> = None;
+        let mut start: Option<(String, String)> = None;
         let mut dismiss = false;
+        let mut later: Option<String> = None;
         let mut skip: Option<String> = None;
         egui::Area::new(egui::Id::new("litewave_update_box"))
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -14.0))
@@ -133,10 +134,10 @@ impl Root {
                             }
                             ui.horizontal(|ui| {
                                 if ui.button("Update now").clicked() {
-                                    start = Some(url.clone());
+                                    start = Some((url.clone(), version.clone()));
                                 }
                                 if ui.button("Later").clicked() {
-                                    dismiss = true;
+                                    later = Some(version.clone());
                                 }
                                 if ui.button("Skip this version").clicked() {
                                     skip = Some(version.clone());
@@ -160,15 +161,18 @@ impl Root {
                 });
             });
 
-        if let Some(v) = skip {
+        if let Some(v) = later {
+            snooze_version(&v);
+            self.state = State::Dismissed;
+        } else if let Some(v) = skip {
             skip_version(&v);
             self.state = State::Dismissed;
-        } else if let Some(url) = start {
+        } else if let Some((url, version)) = start {
             self.state = State::Downloading;
             let tx = self.tx.clone();
             let ctx = ctx.clone();
             std::thread::spawn(move || {
-                let result = download_and_run(&url);
+                let result = download_and_run(&url, &version);
                 let _ = tx.send(Msg::Downloaded(result));
                 ctx.request_repaint();
             });
@@ -225,6 +229,48 @@ fn skip_version(version: &str) {
     }
 }
 
+fn state_file(name: &str) -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("litewave").join(name))
+}
+
+fn write_state(name: &str, text: &str) {
+    if let Some(f) = state_file(name) {
+        if let Some(dir) = f.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(f, text);
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// "Later": do not ask again about this version for a day.
+fn snooze_version(version: &str) {
+    write_state("snoozed_update.txt", &format!("{version}\n{}", now_secs() + 24 * 3600));
+}
+
+fn snoozed(version: &str) -> bool {
+    let text = state_file("snoozed_update.txt")
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .unwrap_or_default();
+    let mut lines = text.lines();
+    let v = lines.next().unwrap_or("").trim();
+    let until: u64 = lines.next().and_then(|x| x.trim().parse().ok()).unwrap_or(0);
+    v == version && now_secs() < until
+}
+
+/// The installer for this version was already started. If the app still reports an older version
+/// (for example a build from source), do not ask again and again; only a newer release asks.
+fn already_installed(version: &str) -> bool {
+    state_file("installed_update.txt")
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .map_or(false, |t| t.trim() == version)
+}
+
 fn check() -> Option<Msg> {
     let (version, url, notes) = fetch(false).ok().flatten()?;
     Some(Msg::Available { version, url, notes })
@@ -249,7 +295,7 @@ fn fetch(manual: bool) -> Result<Option<Found>, String> {
     }
     let version = tag.trim_start_matches('v').to_string();
     let skipped = skip_file().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
-    if !manual && skipped.trim() == version {
+    if !manual && (skipped.trim() == version || snoozed(&version) || already_installed(&version)) {
         return Ok(None);
     }
     let notes: String = release["body"].as_str().unwrap_or("").chars().take(700).collect();
@@ -264,7 +310,7 @@ fn fetch(manual: bool) -> Result<Option<Found>, String> {
     }
 }
 
-fn download_and_run(url: &str) -> Result<(), String> {
+fn download_and_run(url: &str, version: &str) -> Result<(), String> {
     // Only ever run an installer that was downloaded from this project's own releases.
     let allowed = format!("https://github.com/{REPO}/releases/download/");
     if !url.starts_with(&allowed) {
@@ -292,6 +338,7 @@ fn download_and_run(url: &str) -> Result<(), String> {
         .args(["/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS"])
         .spawn()
         .map_err(|e| format!("Could not start the installer: {e}"))?;
+    write_state("installed_update.txt", version);
     Ok(())
 }
 
