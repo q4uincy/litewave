@@ -827,6 +827,8 @@ pub struct Engine {
     /// The track we are currently expecting events for.
     want: Arc<Mutex<Option<SpotifyUri>>>,
     ev_rx: Receiver<SpEvent>,
+    /// True once this device was made the active Spotify Connect device (done once, not per song).
+    activated: std::sync::atomic::AtomicBool,
 }
 
 /// `spotify:track:<id>` / `spotify:episode:<id>` -> litewave's id (`<id>` / `episode:<id>`).
@@ -1025,6 +1027,7 @@ impl Engine {
             spirc,
             want,
             ev_rx,
+            activated: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -1063,7 +1066,9 @@ impl Engine {
                     playing_track: None,
                 };
                 let uri_s = uri.to_uri().map_err(|e| format!("Bad Spotify id: {e}"))?;
-                let _ = sp.activate();
+                if !self.activated.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    let _ = sp.activate();
+                }
                 sp.load(LoadRequest::from_tracks(vec![uri_s], opts))
                     .map_err(|e| format!("Spotify Connect could not load it: {e}"))?;
             }
