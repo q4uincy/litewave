@@ -13,7 +13,7 @@ use librespot::{
     metadata::{Metadata, Playlist as LsPlaylist, Track as LsTrack},
     playback::{
         audio_backend,
-        config::{AudioFormat, PlayerConfig},
+        config::{AudioFormat, Bitrate, PlayerConfig},
         mixer::{softmixer::SoftMixer, Mixer, MixerConfig},
         player::{Player as LsPlayer, PlayerEvent},
     },
@@ -44,6 +44,32 @@ const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const MAX_PAGES: usize = 200;
 
 static NULL: Value = Value::Null;
+static OPT_QUALITY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+static OPT_NORMALISE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static OPT_GAPLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Playback options for the next time the Spotify engine starts: quality (0 = 96, 1 = 160,
+/// 2 = 320 kbps), volume normalisation and gapless playback.
+pub fn set_playback_options(quality: u8, normalise: bool, gapless: bool) {
+    use std::sync::atomic::Ordering::Relaxed;
+    OPT_QUALITY.store(quality, Relaxed);
+    OPT_NORMALISE.store(normalise, Relaxed);
+    OPT_GAPLESS.store(gapless, Relaxed);
+}
+
+fn player_config() -> PlayerConfig {
+    use std::sync::atomic::Ordering::Relaxed;
+    PlayerConfig {
+        bitrate: match OPT_QUALITY.load(Relaxed) {
+            0 => Bitrate::Bitrate96,
+            2 => Bitrate::Bitrate320,
+            _ => Bitrate::Bitrate160,
+        },
+        normalisation: OPT_NORMALISE.load(Relaxed),
+        gapless: OPT_GAPLESS.load(Relaxed),
+        ..PlayerConfig::default()
+    }
+}
 static NOTE: Mutex<String> = Mutex::new(String::new());
 
 fn set_note(s: &str) {
@@ -904,7 +930,7 @@ impl Engine {
             // The volume is applied in LowLatencySink, so the player itself gets a no-op volume.
             let sink_volume = mixer.get_soft_volume();
             let player = LsPlayer::new(
-                PlayerConfig::default(),
+                player_config(),
                 session.clone(),
                 Box::new(librespot::playback::mixer::NoOpVolume),
                 move || -> Box<dyn librespot::playback::audio_backend::Sink> {
