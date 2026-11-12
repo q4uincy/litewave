@@ -589,6 +589,26 @@ impl App {
                 }
             });
 
+        // ---- top bar (back / forward) -------------------------------------
+        egui::TopBottomPanel::top("topbar")
+            .exact_height(46.0)
+            .frame(egui::Frame::none().fill(bg).inner_margin(egui::Margin::symmetric(12.0, 7.0)))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+                    let can_back = self.view == View::Spotify && self.sp_nav.len() > 1;
+                    let btn = |t: &str| {
+                        egui::Button::new(egui::RichText::new(t).size(16.0).strong())
+                            .rounding(16.0)
+                            .min_size(vec2(32.0, 32.0))
+                    };
+                    if ui.add_enabled(can_back, btn("<")).clicked() {
+                        actions.push(Action::SpBack);
+                    }
+                    ui.add_enabled(false, btn(">"));
+                });
+            });
+
         // ---- sidebar -----------------------------------------------------
         if show_side {
             egui::SidePanel::left("side")
@@ -620,31 +640,44 @@ impl App {
                     }
 
                     ui.add_space(14.0);
-                    ui.label(egui::RichText::new("SPOTIFY").size(11.0).color(sub));
+                    ui.label(egui::RichText::new("Your Library").size(15.0).strong().color(text));
                     ui.add_space(4.0);
                     if self.sp.is_some() {
                         let root = self.sp_nav.first().map(|p| p.node.clone());
                         let in_sp = self.view == View::Spotify;
-                        for (label, node) in [
-                            ("Search", Node::SpSearch(String::new())),
-                            ("Liked Songs", Node::SpLiked),
-                            ("Playlists", Node::SpPlaylists),
-                            ("Albums", Node::SpAlbums),
-                            ("Artists", Node::SpArtists),
-                            ("Podcasts", Node::SpShows),
-                        ] {
-                            let top_is_search =
-                                matches!(self.sp_nav.last().map(|p| &p.node), Some(Node::SpSearch(_)));
-                            let active = in_sp
-                                && match (&root, &node) {
-                                    (_, Node::SpSearch(_)) => top_is_search,
-                                    (Some(r), n) => r == n && !top_is_search,
-                                    _ => false,
-                                };
-                            if nav_button(ui, label, active, accent).clicked() {
-                                actions.push(Action::SpRoot(node));
-                            }
+                        let top_is_search =
+                            matches!(self.sp_nav.last().map(|p| &p.node), Some(Node::SpSearch(_)));
+                        let is_root = |n: &Node| in_sp && !top_is_search && root.as_ref() == Some(n);
+                        if nav_button(ui, "Search", in_sp && top_is_search, accent).clicked() {
+                            actions.push(Action::SpRoot(Node::SpSearch(String::new())));
                         }
+                        if nav_button(ui, "Liked Songs", is_root(&Node::SpLiked), accent).clicked() {
+                            actions.push(Action::SpRoot(Node::SpLiked));
+                        }
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                            ui.add_space(8.0);
+                            for (label, node) in [
+                                ("Playlists", Node::SpPlaylists),
+                                ("Albums", Node::SpAlbums),
+                                ("Artists", Node::SpArtists),
+                                ("Podcasts", Node::SpShows),
+                            ] {
+                                let on = is_root(&node);
+                                let chip = egui::Button::new(
+                                    egui::RichText::new(label)
+                                        .size(12.5)
+                                        .color(if on { bg } else { text }),
+                                )
+                                .fill(if on { text } else { mix(bg, text, 0.12) })
+                                .rounding(16.0);
+                                if ui.add(chip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                    actions.push(Action::SpRoot(node));
+                                }
+                            }
+                        });
+                        ui.add_space(4.0);
                         if nav_button(ui, "+ New playlist", false, accent).clicked() {
                             actions.push(Action::SpDialog(Dialog::NewPlaylist));
                         }
@@ -653,7 +686,7 @@ impl App {
                     }
 
                     ui.add_space(14.0);
-                    ui.label(egui::RichText::new("MUSIC").size(11.0).color(sub));
+                    ui.label(egui::RichText::new("On this PC").size(15.0).strong().color(text));
                     ui.add_space(4.0);
                     let qlabel = if self.queue.is_empty() {
                         "Queue".to_string()
