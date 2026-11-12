@@ -58,6 +58,16 @@ pub struct Config {
     pub spotify_connect: bool,
     /// Last searches typed in the Spotify search box (newest first, at most 10).
     pub recent_searches: Vec<String>,
+    /// Check GitHub for a newer litewave when the app starts.
+    pub auto_update_check: bool,
+    /// Interface zoom (0.8 - 1.5).
+    pub ui_scale: f32,
+    /// Spotify streaming quality: 0 low (96 kbps), 1 normal (160), 2 high (320). Applies on the next connect.
+    pub spotify_quality: u8,
+    /// Spotify volume normalisation (keeps songs at a similar loudness).
+    pub spotify_normalise: bool,
+    /// Spotify gapless playback.
+    pub spotify_gapless: bool,
 }
 
 impl Default for Config {
@@ -84,6 +94,11 @@ impl Default for Config {
             ytdlp_browser: String::new(),
             spotify_connect: true,
             recent_searches: Vec::new(),
+            auto_update_check: true,
+            ui_scale: 1.0,
+            spotify_quality: 1,
+            spotify_normalise: true,
+            spotify_gapless: true,
         }
     }
 }
