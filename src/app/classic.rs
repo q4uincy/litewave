@@ -451,14 +451,15 @@ impl App {
                         FontId::proportional(12.0),
                         sub,
                     );
-                    // Heart: save the playing Spotify song to Liked Songs.
+                    // Heart: like / unlike the playing Spotify song.
                     if let Some(id) = &current_sp_id {
+                        let liked = self.liked_ids.contains(id);
                         let hc = pos2(full.min.x + side_w - 14.0, cy);
                         let hr = ui
                             .interact(Rect::from_center_size(hc, vec2(24.0, 24.0)), ui.id().with("heart"), Sense::click())
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .on_hover_text("Save to Liked Songs");
-                        let col = if hr.hovered() { text } else { sub };
+                            .on_hover_text(if liked { "Remove from Liked Songs" } else { "Save to Liked Songs" });
+                        let col = if liked { accent } else if hr.hovered() { text } else { sub };
                         let pts: Vec<egui::Pos2> = (0..32)
                             .map(|i| {
                                 let t = i as f32 / 32.0 * std::f32::consts::TAU;
@@ -467,9 +468,17 @@ impl App {
                                 pos2(hc.x + x * 0.5, hc.y - y * 0.5 - 1.0)
                             })
                             .collect();
+                        if liked {
+                            let mid = pos2(hc.x, hc.y - 1.0);
+                            for i in 0..pts.len() {
+                                let tri = vec![mid, pts[i], pts[(i + 1) % pts.len()]];
+                                ui.painter().add(egui::Shape::convex_polygon(tri, col, egui::Stroke::NONE));
+                            }
+                        }
                         ui.painter().add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, col)));
                         if hr.clicked() {
-                            actions.push(Action::SpSave(vec![format!("spotify:track:{id}")]));
+                            let uri = vec![format!("spotify:track:{id}")];
+                            actions.push(if liked { Action::SpUnsave(uri) } else { Action::SpSave(uri) });
                         }
                     }
                     // Click the cover or title to go back to where the song is playing from.
@@ -1378,7 +1387,7 @@ impl App {
                                             (accent, text, sub),
                                             &self.sp_editable,
                                             edit_id,
-                                            on_liked,
+                                            on_liked || t.spotify_id.as_ref().map_or(false, |x| self.liked_ids.contains(x)),
                                             t.explicit && !allow_explicit,
                                             actions,
                                         );
@@ -1454,7 +1463,7 @@ impl App {
                                             (accent, text, sub),
                                             &self.sp_editable,
                                             edit_id,
-                                            on_liked,
+                                            on_liked || t.spotify_id.as_ref().map_or(false, |x| self.liked_ids.contains(x)),
                                             t.explicit && !allow_explicit,
                                             actions,
                                         );
