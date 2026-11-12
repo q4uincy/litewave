@@ -14,6 +14,7 @@ use crate::lyrics::{self, Status as LyricsStatus};
 use crate::spotify;
 use crate::theme::mix;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, TextureId};
+use std::time::{Duration, Instant};
 
 const ROW_H: f32 = 52.0;
 
@@ -285,7 +286,221 @@ fn list_controls(
     }
 }
 
+const SIDE_ROW_H: f32 = 44.0;
+
+/// Sidebar playlist row: small cover and the name. Returns true when clicked.
+fn side_playlist_row(ui: &mut egui::Ui, tex: Option<TextureId>, name: &str, on: bool, text: Color32, sub: Color32) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SIDE_ROW_H), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 8.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let cy = rect.center().y;
+    let p = ui.painter();
+    paint_cover(p, Rect::from_center_size(pos2(rect.min.x + 26.0, cy), vec2(34.0, 34.0)), tex, name);
+    p.with_clip_rect(Rect::from_min_max(pos2(rect.min.x + 50.0, rect.min.y), pos2(rect.max.x - 6.0, rect.max.y)))
+        .text(
+            pos2(rect.min.x + 50.0, cy),
+            Align2::LEFT_CENTER,
+            name,
+            FontId::proportional(14.0),
+            if on { text } else { sub.gamma_multiply(1.25) },
+        );
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// What happened to a queue-panel row.
+#[derive(Clone, Copy, PartialEq)]
+enum RowHit {
+    None,
+    Row,
+    Remove,
+}
+
+/// Compact song row for the queue panel: cover, title + artist, and an "x" on hover when `removable`.
+/// Covers are only requested for rows that are on screen.
+#[allow(clippy::too_many_arguments)]
+fn queue_row(
+    ui: &mut egui::Ui,
+    cache: &mut ArtCache,
+    id: egui::Id,
+    t: &Track,
+    playing: bool,
+    removable: bool,
+    accent: Color32,
+    text: Color32,
+    sub: Color32,
+) -> RowHit {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return RowHit::None;
+    }
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 8.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let tex = t.art_key().and_then(|k| cache.get(ui.ctx(), &k, art::THUMB));
+    let cy = rect.center().y;
+    let p = ui.painter();
+    paint_cover(p, Rect::from_center_size(pos2(rect.min.x + 26.0, cy), vec2(40.0, 40.0)), tex, &t.title);
+    let right = if removable { rect.max.x - 30.0 } else { rect.max.x - 8.0 };
+    let pc = p.with_clip_rect(Rect::from_min_max(pos2(rect.min.x + 54.0, rect.min.y), pos2(right, rect.max.y)));
+    pc.text(
+        pos2(rect.min.x + 54.0, cy - 9.0),
+        Align2::LEFT_CENTER,
+        &t.title,
+        FontId::proportional(14.0),
+        if playing { accent } else { text },
+    );
+    pc.text(
+        pos2(rect.min.x + 54.0, cy + 10.0),
+        Align2::LEFT_CENTER,
+        &t.artist,
+        FontId::proportional(12.0),
+        sub,
+    );
+    if removable && resp.hovered() {
+        let x = Rect::from_center_size(pos2(rect.max.x - 16.0, cy), vec2(24.0, 24.0));
+        let hit = ui.interact(x, id.with("rm"), Sense::click()).on_hover_text("Remove from queue");
+        ui.painter().text(x.center(), Align2::CENTER_CENTER, "x", FontId::proportional(15.0), text);
+        if hit.clicked() {
+            return RowHit::Remove;
+        }
+    }
+    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        RowHit::Row
+    } else {
+        RowHit::None
+    }
+}
+
+/// Small grey heading inside the queue panel.
+fn queue_heading(ui: &mut egui::Ui, s: &str, sub: Color32) {
+    ui.add_space(10.0);
+    ui.label(egui::RichText::new(s).size(13.0).strong().color(sub));
+    ui.add_space(2.0);
+}
+
 impl App {
+    /// Right panel: "Queue" tab (now playing, queued songs, what comes next in the list) and
+    /// "Recent" tab (the last songs played).
+    fn queue_panel(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>, accent: Color32, text: Color32, sub: Color32) {
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            for (label, recent) in [("Queue", false), ("Recent", true)] {
+                let on = self.queue_recent_tab == recent;
+                let r = ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(label).size(17.0).strong().color(if on { text } else { sub }),
+                        )
+                        .sense(Sense::click()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if on {
+                    let y = r.rect.max.y + 3.0;
+                    ui.painter().line_segment(
+                        [pos2(r.rect.min.x, y), pos2(r.rect.max.x, y)],
+                        egui::Stroke::new(2.0, accent),
+                    );
+                }
+                if r.clicked() {
+                    self.queue_recent_tab = recent;
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Close").clicked() {
+                    actions.push(Action::OpenQueue);
+                }
+            });
+        });
+        ui.add_space(6.0);
+
+        egui::ScrollArea::vertical()
+            .id_source("queue_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if self.queue_recent_tab {
+                    // Newest first; the song that is playing now is on the Queue tab instead.
+                    let skip = usize::from(self.now.is_some());
+                    if self.recent.len() <= skip {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Songs you play show up here.").color(sub));
+                    }
+                    for (k, t) in self.recent.iter().enumerate().skip(skip) {
+                        let id = ui.id().with(("recent", k));
+                        if queue_row(ui, &mut self.art, id, t, false, false, accent, text, sub) == RowHit::Row {
+                            actions.push(Action::PlayRecent(k));
+                        }
+                    }
+                    return;
+                }
+
+                if let Some(t) = &self.now {
+                    queue_heading(ui, "Now playing", sub);
+                    let id = ui.id().with("now");
+                    if queue_row(ui, &mut self.art, id, t, true, false, accent, text, sub) == RowHit::Row {
+                        actions.push(Action::Toggle);
+                    }
+                }
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Next in queue").size(13.0).strong().color(sub));
+                    if !self.queue.is_empty() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Clear").clicked() {
+                                actions.push(Action::QueueClear);
+                            }
+                        });
+                    }
+                });
+                ui.add_space(2.0);
+                if self.queue.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Hover a song, press \"...\" and pick Play next or Add to queue.")
+                            .size(12.5)
+                            .color(sub),
+                    );
+                }
+                for (k, t) in self.queue.iter().enumerate() {
+                    let id = ui.id().with(("queued", k));
+                    match queue_row(ui, &mut self.art, id, t, false, true, accent, text, sub) {
+                        RowHit::Remove => actions.push(Action::QueueRemove(k)),
+                        RowHit::Row => actions.push(Action::QueuePlay(k)),
+                        RowHit::None => {}
+                    }
+                }
+
+                // What the list plays after this (not with shuffle: the order is random then).
+                if !self.cfg.shuffle {
+                    let base = self.current.filter(|c| self.filtered.contains(c));
+                    if let Some(pos) = base.and_then(|c| self.filtered.iter().position(|&i| i == c)) {
+                        let name = self
+                            .playing_from
+                            .as_ref()
+                            .map(|(_, n)| n.clone())
+                            .unwrap_or_else(|| if self.list_is_local { "Your Library".to_string() } else { "this list".to_string() });
+                        let mut head = false;
+                        for &i in self.filtered.iter().skip(pos + 1).take(25) {
+                            let Some(t) = self.tracks.get(i) else { continue };
+                            if t.explicit && !self.cfg.allow_explicit {
+                                continue;
+                            }
+                            if !head {
+                                head = true;
+                                queue_heading(ui, &format!("Next from {name}"), sub);
+                            }
+                            let id = ui.id().with(("next", i));
+                            if queue_row(ui, &mut self.art, id, t, false, false, accent, text, sub) == RowHit::Row {
+                                actions.push(Action::Play(i));
+                            }
+                        }
+                    }
+                }
+            });
+    }
+
     /// The popup behind the shuffle buttons: Off, Shuffle, Smart shuffle.
     fn shuffle_menu_ui(
         &mut self,
@@ -405,6 +620,20 @@ impl App {
         let show_side = screen_w >= 640.0;
         let wide = screen_w >= 820.0;
         let lyrics_side = self.cfg.lyrics_panel && screen_w >= 760.0;
+        let queue_side = self.cfg.queue_panel && screen_w >= 760.0;
+
+        // Ask for the playlist list once (and again when it is old or was dropped), for the sidebar rows.
+        if show_side
+            && self.sp.is_some()
+            && self.side_fetch.map_or(true, |t| t.elapsed() > Duration::from_secs(10))
+            && self
+                .page_cache
+                .get("SpPlaylists")
+                .map_or(true, |(at, _, _)| at.elapsed() > Duration::from_secs(600))
+        {
+            self.side_fetch = Some(Instant::now());
+            self.spawn_fetch(Node::SpPlaylists);
+        }
         let current_sp_id = self.now.as_ref().and_then(|t| t.spotify_id.clone());
         let mode = self.cfg.shuffle_mode();
         let allow_explicit = self.cfg.allow_explicit;
@@ -606,6 +835,20 @@ impl App {
                             if lyr.clicked() {
                                 actions.push(Action::ToggleLyricsPanel);
                             }
+                            if side_w >= 200.0 {
+                                let q = mode_button(
+                                    ui,
+                                    ModeIcon::Queue,
+                                    self.cfg.queue_panel,
+                                    accent,
+                                    false,
+                                    false,
+                                )
+                                .on_hover_text("Queue");
+                                if q.clicked() {
+                                    actions.push(Action::OpenQueue);
+                                }
+                            }
                         });
                     });
                 }
@@ -703,6 +946,35 @@ impl App {
                         if nav_button(ui, "+ New playlist", false, accent).clicked() {
                             actions.push(Action::SpDialog(Dialog::NewPlaylist));
                         }
+                        // Playlist rows with covers (from the cached playlist list, no extra memory).
+                        let open_pl = if in_sp { self.sp_nav.last().map(|p| p.node.clone()) } else { None };
+                        if let Some((_, items, _)) = self.page_cache.get("SpPlaylists") {
+                            let n = items.len().min(60);
+                            let h = if tall { (ui.available_height() - 230.0).clamp(0.0, 360.0) } else { 220.0 };
+                            if n > 0 && h >= 60.0 {
+                                ui.add_space(6.0);
+                                ui.scope(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    egui::ScrollArea::vertical()
+                                        .id_source("side_playlists")
+                                        .max_height(h)
+                                        .auto_shrink([false, true])
+                                        .show_rows(ui, SIDE_ROW_H, n, |ui, range| {
+                                            for it in &items[range] {
+                                                let Kind::Open(node) = &it.kind else { continue };
+                                                let on = open_pl.as_ref() == Some(node);
+                                                let tex = it
+                                                    .art
+                                                    .clone()
+                                                    .and_then(|u| self.art.get(ui.ctx(), &ArtKey::Url(u), art::THUMB));
+                                                if side_playlist_row(ui, tex, &it.label, on, text, sub) {
+                                                    actions.push(Action::SpRoot(node.clone()));
+                                                }
+                                            }
+                                        });
+                                });
+                            }
+                        }
                     } else if nav_button(ui, "Connect Spotify", false, accent).clicked() {
                         actions.push(Action::SpotifyWindow);
                     }
@@ -715,7 +987,7 @@ impl App {
                     } else {
                         format!("Queue ({})", self.queue.len())
                     };
-                    if nav_button(ui, &qlabel, self.view == View::Queue, accent).clicked() {
+                    if nav_button(ui, &qlabel, self.cfg.queue_panel, accent).clicked() {
                         actions.push(Action::OpenQueue);
                     }
                     if nav_button(ui, "Add music folder", false, accent).clicked() {
@@ -763,6 +1035,14 @@ impl App {
                 .show(ctx, |ui| self.lyrics_panel(ui, actions, pos, text, sub));
         }
 
+        // ---- queue (right) -----------------------------------------------
+        if queue_side {
+            egui::SidePanel::right("queue")
+                .exact_width((screen_w * 0.3).clamp(280.0, 400.0))
+                .resizable(false)
+                .show(ctx, |ui| self.queue_panel(ui, actions, accent, text, sub));
+        }
+
         // ---- main area ---------------------------------------------------
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(6.0);
@@ -807,51 +1087,15 @@ impl App {
                 return;
             }
 
-            if self.view == View::Account {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    self.spotify_page(ui);
-                });
+            // Narrow window: the queue takes over the main area as well.
+            if self.cfg.queue_panel && !queue_side {
+                self.queue_panel(ui, actions, accent, text, sub);
                 return;
             }
 
-            if self.view == View::Queue {
-                ui.label(egui::RichText::new("Queue").size(24.0).strong());
-                ui.add_space(8.0);
-                if let Some(t) = &self.now {
-                    ui.label(egui::RichText::new("Now playing").size(12.0).color(sub));
-                    ui.label(egui::RichText::new(format!("{} - {}", t.title, t.artist)).color(text));
-                    ui.add_space(10.0);
-                }
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("Next in queue ({})", self.queue.len()))
-                            .size(12.0)
-                            .color(sub),
-                    );
-                    if !self.queue.is_empty() && ui.small_button("Clear").clicked() {
-                        actions.push(Action::QueueClear);
-                    }
-                });
-                if self.queue.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new("Nothing queued. Hover a song, press \"...\" and pick Play next or Add to queue.")
-                            .color(sub),
-                    );
-                }
+            if self.view == View::Account {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for (k, t) in self.queue.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("{}", k + 1)).color(sub));
-                            ui.label(egui::RichText::new(&t.title).color(text));
-                            ui.label(egui::RichText::new(&t.artist).color(sub));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("Remove").clicked() {
-                                    actions.push(Action::QueueRemove(k));
-                                }
-                            });
-                        });
-                    }
+                    self.spotify_page(ui);
                 });
                 return;
             }
