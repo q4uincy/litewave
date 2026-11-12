@@ -8,8 +8,14 @@ use crate::library::Track;
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Mutex,
     time::SystemTime,
 };
+
+/// The yt-dlp that was found last time, so the (slow) `--version` check runs once, not per song.
+static FOUND: Mutex<Option<(String, PathBuf)>> = Mutex::new(None);
+/// The browser whose cookies worked last time, tried first so a song does not wait on failures.
+static GOOD_BROWSER: Mutex<Option<String>> = Mutex::new(None);
 
 /// How many finished downloads are kept in the cache folder.
 const CACHE_KEEP: usize = 30;
@@ -28,6 +34,21 @@ fn command(bin: &Path) -> Command {
 
 /// Finds a working yt-dlp: the configured path first, then `yt-dlp` on the PATH.
 pub fn find(configured: &str) -> Option<PathBuf> {
+    if let Ok(g) = FOUND.lock() {
+        if let Some((key, path)) = g.as_ref() {
+            if key == configured {
+                return Some(path.clone());
+            }
+        }
+    }
+    let found = find_uncached(configured)?;
+    if let Ok(mut g) = FOUND.lock() {
+        *g = Some((configured.to_string(), found.clone()));
+    }
+    Some(found)
+}
+
+fn find_uncached(configured: &str) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if !configured.trim().is_empty() {
         candidates.push(PathBuf::from(configured.trim()));
@@ -104,9 +125,22 @@ fn cookie_args(c: &mut Command, browser: &str) {
 fn browsers_to_try(browser: &str) -> Vec<String> {
     let b = browser.trim().to_lowercase();
     if b.is_empty() {
-        ["", "firefox", "edge", "chrome", "brave"].iter().map(|x| x.to_string()).collect()
+        let mut v: Vec<String> =
+            ["", "firefox", "edge", "chrome", "brave"].iter().map(|x| x.to_string()).collect();
+        // Start with whatever worked last time.
+        if let Some(good) = GOOD_BROWSER.lock().ok().and_then(|g| g.clone()) {
+            v.retain(|x| *x != good);
+            v.insert(0, good);
+        }
+        v
     } else {
         vec![b]
+    }
+}
+
+fn remember_browser(b: &str) {
+    if let Ok(mut g) = GOOD_BROWSER.lock() {
+        *g = Some(b.to_string());
     }
 }
 
@@ -142,6 +176,7 @@ pub fn search(bin: &Path, query: &str, count: usize, browser: &str) -> Result<Ve
             .output()
             .map_err(|e| format!("Could not run yt-dlp: {e}"))?;
         if out.status.success() {
+            remember_browser(&b);
             return parse_results(&String::from_utf8_lossy(&out.stdout));
         }
         last = last_line(&out.stderr, "yt-dlp search failed");
@@ -173,6 +208,11 @@ pub fn fetch_audio(bin: &Path, id: &str, browser: &str) -> Result<PathBuf, Strin
             "--no-playlist",
             "--no-warnings",
             "--no-part",
+            "--no-mtime",
+            "--concurrent-fragments",
+            "4",
+            "--socket-timeout",
+            "15",
         ]);
         cookie_args(&mut c, &b);
         let out = c
@@ -183,6 +223,7 @@ pub fn fetch_audio(bin: &Path, id: &str, browser: &str) -> Result<PathBuf, Strin
             .output()
             .map_err(|e| format!("Could not run yt-dlp: {e}"))?;
         if out.status.success() {
+            remember_browser(&b);
             done = true;
             break;
         }
