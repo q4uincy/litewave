@@ -7,14 +7,14 @@
 mod real;
 #[cfg(feature = "spotify")]
 pub use real::{
-    last_log, log_path, status_note, Client, Engine, SessionHandle, REDIRECT_URI, SHARED_CLIENT_ID,
+    last_log, log_path, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI, SHARED_CLIENT_ID,
 };
 
 #[cfg(not(feature = "spotify"))]
 mod stub;
 #[cfg(not(feature = "spotify"))]
 pub use stub::{
-    last_log, log_path, status_note, Client, Engine, SessionHandle, REDIRECT_URI, SHARED_CLIENT_ID,
+    last_log, log_path, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI, SHARED_CLIENT_ID,
 };
 
 /// What a catalogue search found (up to 10 of each kind).
