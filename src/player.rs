@@ -50,7 +50,7 @@ impl Player {
         // message instead of a crash. The panic hook in main.rs stays quiet while this flag is set.
         EXPECT_PANIC.store(true, Ordering::Relaxed);
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Decoder::new(BufReader::new(file))
+            Decoder::new(BufReader::with_capacity(256 * 1024, file))
         }));
         EXPECT_PANIC.store(false, Ordering::Relaxed);
         let decoder = match made {
@@ -65,7 +65,27 @@ impl Player {
         if start.is_zero() {
             sink.append(decoder);
         } else {
-            sink.append(decoder.skip_duration(start));
+            // Jump straight to the position. skip_duration would decode everything before it,
+            // which makes seeking (and resuming) late in a song slow.
+            sink.append(decoder);
+            if sink.try_seek(start).is_err() {
+                // The format cannot seek: reopen and skip the slow way.
+                sink.stop();
+                let file = File::open(path).map_err(|e| format!("Cannot open file: {e}"))?;
+                let again = Decoder::new(BufReader::with_capacity(256 * 1024, file))
+                    .map_err(|e| format!("Cannot decode file: {e}"))?;
+                let sink2 = Sink::try_new(&self.handle).map_err(|e| format!("Audio error: {e}"))?;
+                sink2.set_volume(self.volume);
+                if !autoplay {
+                    sink2.pause();
+                }
+                sink2.append(again.skip_duration(start));
+                self.sink = Some(sink2);
+                if autoplay {
+                    self.started = Some(Instant::now());
+                }
+                return Ok(());
+            }
         }
         self.sink = Some(sink);
         if autoplay {
