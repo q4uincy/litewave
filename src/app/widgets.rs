@@ -81,6 +81,7 @@ pub enum ModeIcon {
     Shuffle,
     Repeat,
     Lyrics,
+    Queue,
 }
 
 /// Drawn shuffle / repeat button. `on` tints it with the accent and adds the small dot
@@ -148,6 +149,22 @@ pub fn mode_button(
             }
             p.line_segment([pos2(c.x, c.y + 5.5), pos2(c.x, c.y + 8.5)], st);
             p.line_segment([pos2(c.x - 3.5, c.y + 8.5), pos2(c.x + 3.5, c.y + 8.5)], st);
+        }
+        ModeIcon::Queue => {
+            // Spotify's queue icon: three lines and a small play triangle.
+            for dy in [-6.0_f32, -1.0, 4.0] {
+                let x1 = if dy > 3.0 { c.x - 1.0 } else { c.x + 8.0 };
+                p.line_segment([pos2(c.x - 8.0, c.y + dy), pos2(x1, c.y + dy)], st);
+            }
+            p.add(Shape::convex_polygon(
+                vec![
+                    pos2(c.x + 3.0, c.y + 1.0),
+                    pos2(c.x + 3.0, c.y + 8.0),
+                    pos2(c.x + 9.0, c.y + 4.5),
+                ],
+                col,
+                Stroke::NONE,
+            ));
         }
         ModeIcon::Repeat => {
             p.rect_stroke(Rect::from_center_size(c, vec2(18.0, 12.0)), 4.0, st);
