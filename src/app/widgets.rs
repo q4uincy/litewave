@@ -210,7 +210,7 @@ pub fn bar(
     let p = ui.painter();
     p.rect_filled(line, h / 2.0, track);
     let filled = Rect::from_min_max(line.min, pos2(line.min.x + line.width() * f, line.max.y));
-    p.rect_filled(filled, h / 2.0, if active { fill } else { fill.gamma_multiply(0.9) });
+    p.rect_filled(filled, h / 2.0, if active { fill } else { Color32::from_gray(235) });
     if active {
         p.circle_filled(pos2(filled.max.x, rect.center().y), 6.0, Color32::WHITE);
     }
