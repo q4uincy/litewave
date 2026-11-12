@@ -166,6 +166,13 @@ impl Theme {
         v.window_stroke = Stroke::new(1.0, self.border());
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, self.border());
         ctx.set_visuals(v);
+        // Roomier, calmer spacing: more padding in buttons, thin floating scrollbars.
+        ctx.style_mut(|st| {
+            st.spacing.item_spacing = egui::vec2(8.0, 7.0);
+            st.spacing.button_padding = egui::vec2(12.0, 6.0);
+            st.spacing.interact_size.y = 28.0;
+            st.spacing.scroll = egui::style::ScrollStyle::floating();
+        });
     }
 }
 
