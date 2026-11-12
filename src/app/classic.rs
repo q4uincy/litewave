@@ -413,7 +413,7 @@ impl App {
 
         // ---- player bar --------------------------------------------------
         egui::TopBottomPanel::bottom("player")
-            .exact_height(92.0)
+            .exact_height(84.0)
             .show(ctx, |ui| {
                 let full = ui.available_rect_before_wrap();
                 let w = full.width();
@@ -451,6 +451,27 @@ impl App {
                         FontId::proportional(12.0),
                         sub,
                     );
+                    // Heart: save the playing Spotify song to Liked Songs.
+                    if let Some(id) = &current_sp_id {
+                        let hc = pos2(full.min.x + side_w - 14.0, cy);
+                        let hr = ui
+                            .interact(Rect::from_center_size(hc, vec2(24.0, 24.0)), ui.id().with("heart"), Sense::click())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Save to Liked Songs");
+                        let col = if hr.hovered() { text } else { sub };
+                        let pts: Vec<egui::Pos2> = (0..32)
+                            .map(|i| {
+                                let t = i as f32 / 32.0 * std::f32::consts::TAU;
+                                let x = 16.0 * t.sin().powi(3);
+                                let y = 13.0 * t.cos() - 5.0 * (2.0 * t).cos() - 2.0 * (3.0 * t).cos() - (4.0 * t).cos();
+                                pos2(hc.x + x * 0.5, hc.y - y * 0.5 - 1.0)
+                            })
+                            .collect();
+                        ui.painter().add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, col)));
+                        if hr.clicked() {
+                            actions.push(Action::SpSave(vec![format!("spotify:track:{id}")]));
+                        }
+                    }
                     // Click the cover or title to go back to where the song is playing from.
                     let hit = Rect::from_min_max(cover.min, pos2(full.min.x + side_w, cover.max.y));
                     let r = ui
@@ -564,14 +585,6 @@ impl App {
                             if resp.dragged() || resp.clicked() {
                                 actions.push(Action::Volume(f));
                             }
-                            ui.add_sized(
-                                [34.0, 16.0],
-                                egui::Label::new(
-                                    egui::RichText::new(format!("{}%", (self.cfg.volume * 100.0).round() as i32))
-                                        .size(11.5)
-                                        .color(sub),
-                                ),
-                            );
                             let lyr = mode_button(
                                 ui,
                                 ModeIcon::Lyrics,
