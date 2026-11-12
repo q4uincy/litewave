@@ -18,7 +18,11 @@ pub const MID: u32 = 128;
 pub const BIG: u32 = 256;
 
 const MAX_ENTRIES: usize = 220;
-const MAX_ACTIVE: usize = 4;
+const MAX_ACTIVE: usize = 8;
+/// A failed download is tried again after this long (a blip in the network must not leave a
+/// cover missing until the app is restarted).
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(4);
+const MAX_RETRIES: u8 = 3;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ArtKey {
@@ -39,7 +43,7 @@ pub struct ArtCache {
     textures: HashMap<Slot, TextureHandle>,
     order: VecDeque<Slot>,
     pending: HashSet<Slot>,
-    failed: HashSet<Slot>,
+    failed: HashMap<Slot, (std::time::Instant, u8)>,
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
     active: Arc<AtomicUsize>,
@@ -53,7 +57,7 @@ impl ArtCache {
             textures: HashMap::new(),
             order: VecDeque::new(),
             pending: HashSet::new(),
-            failed: HashSet::new(),
+            failed: HashMap::new(),
             tx,
             rx,
             active: Arc::new(AtomicUsize::new(0)),
@@ -82,7 +86,8 @@ impl ArtCache {
                     }
                 }
                 None => {
-                    self.failed.insert(slot);
+                    let tries = self.failed.get(&slot).map_or(0, |f| f.1) + 1;
+                    self.failed.insert(slot, (std::time::Instant::now(), tries));
                 }
             }
         }
@@ -94,8 +99,18 @@ impl ArtCache {
         if let Some(t) = self.textures.get(&slot) {
             return Some(t.id());
         }
-        if self.pending.contains(&slot) || self.failed.contains(&slot) {
+        if self.pending.contains(&slot) {
             return None;
+        }
+        if let Some((at, tries)) = self.failed.get(&slot) {
+            let online = matches!(slot.0, ArtKey::Url(_) | ArtKey::UrlWide(_));
+            if !online || *tries >= MAX_RETRIES {
+                return None; // no picture in the file, or it keeps failing
+            }
+            if at.elapsed() < RETRY_AFTER {
+                ctx.request_repaint_after(RETRY_AFTER);
+                return None;
+            }
         }
         if self.active.load(Ordering::Relaxed) >= MAX_ACTIVE {
             return None;
@@ -150,11 +165,21 @@ fn load_art(key: &ArtKey, size: u32) -> Option<ColorImage> {
     ))
 }
 
+/// One shared HTTP agent, so covers reuse connections instead of a new TLS handshake each.
+fn agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(6))
+            .timeout(std::time::Duration::from_secs(15))
+            .max_idle_connections_per_host(8)
+            .build()
+    })
+}
+
 fn fetch_url(url: &str) -> Option<Vec<u8>> {
     use std::io::Read;
-    let resp = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
+    let resp = agent()
         .get(url)
         .call()
         .ok()?;
