@@ -109,6 +109,8 @@ pub type SpLogin = (spotify::Client, Result<spotify::Engine, String>, String, Op
 pub enum SpMsg {
     Page(Node, Result<(Vec<ipod::Item>, Vec<Track>), String>),
     Connected(Result<SpLogin, String>),
+    /// Spotify ids of all Liked Songs.
+    Liked(Vec<String>),
     /// An edit finished: a message to show and the page to reload (if any).
     Done(Result<String, String>, Option<Node>),
     /// The playlists the user is allowed to edit.
@@ -211,6 +213,8 @@ pub struct App {
     art: ArtCache,
     view: View,
     sp_nav: Vec<ipod::Page>,
+    /// Spotify ids of the songs in Liked Songs (drives the heart and the menus).
+    pub(crate) liked_ids: HashSet<String>,
     sp_interactive: bool,
     pub(crate) sp_link: String,
     /// Text in the YouTube section's search box.
@@ -329,6 +333,7 @@ impl App {
             art: ArtCache::new(),
             view: View::Library,
             sp_nav: Vec::new(),
+            liked_ids: HashSet::new(),
             sp_interactive: false,
             sp_link: String::new(),
             yt_query: String::new(),
@@ -620,9 +625,27 @@ impl App {
     fn poll_sp(&mut self) {
         while let Ok(msg) = self.sp_rx.try_recv() {
             match msg {
-                SpMsg::Page(node, res) => self.ipod_receive(node, res),
+                SpMsg::Page(node, res) => {
+                    if node == Node::SpLiked {
+                        if let Ok((_, tracks)) = &res {
+                            self.liked_ids = tracks.iter().filter_map(|t| t.spotify_id.clone()).collect();
+                        }
+                    }
+                    self.ipod_receive(node, res)
+                }
+                SpMsg::Liked(ids) => self.liked_ids = ids.into_iter().collect(),
                 SpMsg::Connected(Ok((client, engine, refresh, browse_refresh))) => {
                     self.sp = Some(client);
+                    if let Some(c) = self.sp.clone() {
+                        let tx = self.sp_tx.clone();
+                        let ctx = self.ctx.clone();
+                        std::thread::spawn(move || {
+                            if let Ok(v) = c.liked() {
+                                let _ = tx.send(SpMsg::Liked(v.into_iter().filter_map(|t| t.spotify_id).collect()));
+                                ctx.request_repaint();
+                            }
+                        });
+                    }
                     match engine {
                         Ok(e) => {
                             let device = e.has_connect();
@@ -2000,6 +2023,11 @@ impl App {
                 });
             }
             Action::SpSave(uris) => {
+                for u in &uris {
+                    if let Some(id) = u.strip_prefix("spotify:track:") {
+                        self.liked_ids.insert(id.to_string());
+                    }
+                }
                 self.forget_library_pages();
                 self.sp_task(None, move |c| {
                     c.library_add(&uris)?;
@@ -2007,6 +2035,11 @@ impl App {
                 });
             }
             Action::SpUnsave(uris) => {
+                for u in &uris {
+                    if let Some(id) = u.strip_prefix("spotify:track:") {
+                        self.liked_ids.remove(id);
+                    }
+                }
                 self.forget_library_pages();
                 let reload = self.sp_nav.last().map(|p| p.node.clone()).filter(|n| {
                     matches!(
