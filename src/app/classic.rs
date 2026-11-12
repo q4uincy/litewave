@@ -663,60 +663,29 @@ impl App {
                     if nav_button(ui, &qlabel, self.view == View::Queue, accent).clicked() {
                         actions.push(Action::OpenQueue);
                     }
-                    if nav_button(ui, "Open folder", false, accent).clicked() {
+                    if nav_button(ui, "Add music folder", false, accent).clicked() {
                         actions.push(Action::OpenFolder);
                     }
-                    if nav_button(ui, "Add songs", false, accent).clicked() {
-                        actions.push(Action::AddFiles);
-                    }
-                    if nav_button(ui, "Rescan", false, accent).clicked() {
-                        actions.push(Action::Rescan);
-                    }
 
-                    ui.add_space(14.0);
-                    ui.label(egui::RichText::new("YOUTUBE").size(11.0).color(sub));
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new("  Coming soon").size(13.0).color(sub));
-                    let explicit_label = if self.cfg.allow_explicit {
-                        "Explicit content: on"
-                    } else {
-                        "Explicit content: off"
-                    };
+                    // Footer: just Themes and Settings. Everything else lives in Settings.
                     if tall {
                         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                             ui.add_space(10.0);
-                            if nav_button(ui, explicit_label, !self.cfg.allow_explicit, accent).clicked() {
-                                actions.push(Action::ToggleExplicit);
-                            }
-                            if nav_button(ui, "Report a bug", false, accent).clicked() {
-                                ui.ctx().open_url(egui::OpenUrl::new_tab(BUG_URL));
+                            // bottom_up: the first item drawn sits at the very bottom.
+                            if nav_button(ui, "Settings", self.view == View::Settings, accent).clicked() {
+                                actions.push(Action::Settings);
                             }
                             if nav_button(ui, "Themes", self.view == View::Themes, accent).clicked() {
                                 actions.push(Action::Themes);
                             }
-                            if nav_button(ui, "Spotify account", self.view == View::Account, accent).clicked() {
-                                actions.push(Action::SpotifyWindow);
-                            }
-                            if nav_button(ui, "Settings", self.view == View::Settings, accent).clicked() {
-                                actions.push(Action::Settings);
-                            }
                         });
                     } else {
                         ui.add_space(14.0);
-                        if nav_button(ui, "Spotify account", self.view == View::Account, accent).clicked() {
-                            actions.push(Action::SpotifyWindow);
-                        }
                         if nav_button(ui, "Themes", self.view == View::Themes, accent).clicked() {
                             actions.push(Action::Themes);
                         }
                         if nav_button(ui, "Settings", self.view == View::Settings, accent).clicked() {
                             actions.push(Action::Settings);
-                        }
-                        if nav_button(ui, "Report a bug", false, accent).clicked() {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(BUG_URL));
-                        }
-                        if nav_button(ui, explicit_label, !self.cfg.allow_explicit, accent).clicked() {
-                            actions.push(Action::ToggleExplicit);
                         }
                         ui.add_space(10.0);
                     }
