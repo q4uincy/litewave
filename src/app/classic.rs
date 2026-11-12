@@ -661,7 +661,12 @@ impl App {
                     let cover = Rect::from_center_size(pos2(full.min.x + 28.0, cy), vec2(56.0, 56.0));
                     paint_cover(p, cover, bar_art, &title);
                     let tx = cover.max.x + 12.0;
-                    let clip = Rect::from_min_max(pos2(tx, full.min.y), pos2(full.min.x + side_w, full.max.y));
+                    // Leave room on the right for the heart so it never sits on top of the title.
+                    let heart_room = if current_sp_id.is_some() { 30.0 } else { 0.0 };
+                    let clip = Rect::from_min_max(
+                        pos2(tx, full.min.y),
+                        pos2((full.min.x + side_w - heart_room).max(tx + 10.0), full.max.y),
+                    );
                     let pc = p.with_clip_rect(clip);
                     pc.text(
                         pos2(tx, cy - 10.0),
@@ -680,10 +685,23 @@ impl App {
                         FontId::proportional(12.0),
                         sub,
                     );
+                    // Click the cover or title to go back to where the song is playing from.
+                    let hit = Rect::from_min_max(cover.min, pos2((full.min.x + side_w - heart_room).max(tx), cover.max.y));
+                    let r = ui
+                        .interact(hit, ui.id().with("now_playing"), Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(match &from_name {
+                            Some(n) => format!("Go to {n}"),
+                            None => "Go to the song list".to_string(),
+                        });
+                    if r.clicked() {
+                        actions.push(Action::GoToSource);
+                    }
+
                     // Heart: like / unlike the playing Spotify song.
                     if let Some(id) = &current_sp_id {
                         let liked = self.liked_ids.contains(id);
-                        let hc = pos2(full.min.x + side_w - 14.0, cy);
+                        let hc = pos2(full.min.x + side_w - 12.0, cy);
                         let hr = ui
                             .interact(Rect::from_center_size(hc, vec2(24.0, 24.0)), ui.id().with("heart"), Sense::click())
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -709,18 +727,6 @@ impl App {
                             let uri = vec![format!("spotify:track:{id}")];
                             actions.push(if liked { Action::SpUnsave(uri) } else { Action::SpSave(uri) });
                         }
-                    }
-                    // Click the cover or title to go back to where the song is playing from.
-                    let hit = Rect::from_min_max(cover.min, pos2(full.min.x + side_w, cover.max.y));
-                    let r = ui
-                        .interact(hit, ui.id().with("now_playing"), Sense::click())
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(match &from_name {
-                            Some(n) => format!("Go to {n}"),
-                            None => "Go to the song list".to_string(),
-                        });
-                    if r.clicked() {
-                        actions.push(Action::GoToSource);
                     }
                 }
 
