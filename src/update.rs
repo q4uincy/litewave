@@ -68,6 +68,8 @@ impl Root {
         let mut state = State::Dismissed;
         if cfg!(windows) {
             state = State::Idle;
+        }
+        if cfg!(windows) && crate::config::Config::load().auto_update_check {
             let tx = tx.clone();
             let ctx = cc.egui_ctx.clone();
             std::thread::spawn(move || {
