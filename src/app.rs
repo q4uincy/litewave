@@ -1,5 +1,6 @@
 mod classic;
 mod ipod;
+mod settings;
 mod themes;
 mod widgets;
 
@@ -250,6 +251,8 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let cfg = Config::load();
+        cc.egui_ctx.set_zoom_factor(cfg.ui_scale.clamp(0.8, 1.5));
+        spotify::set_playback_options(cfg.spotify_quality, cfg.spotify_normalise, cfg.spotify_gapless);
         let (player, error) = match Playback::new(cfg.volume) {
             Ok(p) => (Some(p), None),
             Err(e) => (
@@ -980,61 +983,6 @@ impl App {
     }
 
     /// Settings page (classic layout): updates, appearance, Spotify, playback notes, about.
-    pub(crate) fn settings_page(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let weak = ui.visuals().weak_text_color();
-        let head = |ui: &mut egui::Ui, t: &str| {
-            ui.add_space(18.0);
-            ui.label(egui::RichText::new(t).size(18.0).strong());
-            ui.add_space(6.0);
-        };
-        ui.label(egui::RichText::new("Settings").size(24.0).strong());
-
-        head(ui, "Updates");
-        ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-        ui.add_space(4.0);
-        if ui.button("Check for updates").clicked() {
-            crate::update::request_check();
-        }
-        let st = crate::update::status();
-        if !st.is_empty() {
-            ui.label(egui::RichText::new(st).color(weak));
-        }
-        ui.hyperlink_to("All releases on GitHub", format!("{REPO_URL}/releases"));
-        ui.weak("Update now installs the new version and restarts litewave (installer version only).");
-
-        head(ui, "Appearance");
-        ui.horizontal(|ui| {
-            if ui.button("Open Themes").clicked() {
-                actions.push(Action::Themes);
-            }
-            if ui.button("Open themes folder").clicked() {
-                if let Some(dir) = theme::themes_dir() {
-                    theme::open_folder(&dir);
-                }
-            }
-        });
-        ui.weak("Add your own theme: drop a .json theme file (and its wallpaper) on the window, or copy it into the themes folder and press Reload on the Themes page.");
-
-        head(ui, "Spotify");
-        ui.horizontal(|ui| {
-            if ui.button("Spotify account").clicked() {
-                actions.push(Action::SpotifyWindow);
-            }
-            let txt = if self.sp.is_some() { "Connected" } else { "Not connected" };
-            ui.label(egui::RichText::new(txt).color(weak));
-        });
-        if ui.checkbox(&mut self.cfg.allow_explicit, "Allow explicit content").changed() {
-            self.cfg_dirty = true;
-        }
-
-        head(ui, "Library and playback");
-        ui.weak("Planned: local playlists, gapless playback, crossfade and ReplayGain.");
-
-        head(ui, "About");
-        ui.hyperlink_to("litewave on GitHub", REPO_URL);
-        ui.hyperlink_to("Report a bug", BUG_URL);
-    }
-
     fn spotify_window(&mut self, ctx: &egui::Context) {
         self.sp_focus = false;
         if !self.sp_window {
@@ -1787,6 +1735,13 @@ impl App {
             if let Some(p) = self.player.as_mut() {
                 p.toggle();
             }
+        } else if self.now.is_none()
+            && self.view == View::Spotify
+            && self.sp_nav.last().map_or(false, |p| !p.tracks.is_empty())
+        {
+            // Nothing is playing yet and a Spotify list is open: play that list.
+            let ctx = self.ctx.clone();
+            self.apply(Action::SpPlayAll, &ctx);
         } else if let Some(i) = self.current.or_else(|| self.filtered.first().copied()) {
             self.play_index(i, true);
         }
@@ -2189,6 +2144,12 @@ impl eframe::App for App {
                 self.error = Some(m);
             }
             remote = p.take_remote();
+            // The song did start after all (slowly): drop the stale "did not start" message.
+            if p.is_playing()
+                && self.error.as_deref().map_or(false, |e| e.starts_with("Spotify did not start"))
+            {
+                self.error = None;
+            }
             if p.volume_pending() {
                 ctx.request_repaint_after(Duration::from_millis(120));
             }
