@@ -165,25 +165,22 @@ pub fn mode_button(
 }
 
 /// Flat sidebar entry.
-pub fn nav_button(ui: &mut Ui, label: &str, active: bool, accent: Color32) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
-    if active {
-        ui.painter().rect_filled(rect, 8.0, accent.gamma_multiply(0.20));
-        ui.painter().rect_filled(
-            Rect::from_center_size(pos2(rect.min.x + 3.0, rect.center().y), vec2(3.0, 16.0)),
-            1.5,
-            accent,
-        );
-    } else if resp.hovered() {
+pub fn nav_button(ui: &mut Ui, label: &str, active: bool, _accent: Color32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    if resp.hovered() {
         ui.painter()
             .rect_filled(rect, 8.0, ui.visuals().widgets.hovered.weak_bg_fill);
     }
-    let col = if active { accent } else { ui.visuals().text_color() };
+    let col = if active {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color().gamma_multiply(0.72)
+    };
     ui.painter().text(
         pos2(rect.min.x + 14.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
-        FontId::proportional(14.0),
+        FontId::proportional(15.0),
         col,
     );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
