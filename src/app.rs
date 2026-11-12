@@ -2145,7 +2145,7 @@ impl eframe::App for App {
             }
             remote = p.take_remote();
             // The song did start after all (slowly): drop the stale "did not start" message.
-            if p.is_playing()
+            if (p.is_playing() || p.position() > Duration::from_millis(1500))
                 && self.error.as_deref().map_or(false, |e| e.starts_with("Spotify did not start"))
             {
                 self.error = None;
