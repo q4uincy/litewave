@@ -47,6 +47,8 @@ pub struct Config {
     pub show_lyrics: bool,
     /// The lyrics panel in the main window (opened with the lyrics button; closed by default).
     pub lyrics_panel: bool,
+    /// The Queue / Recent panel on the right of the main window (closed by default).
+    pub queue_panel: bool,
     /// Like Spotify's "Allow explicit content": when off, explicit songs are greyed out and skipped.
     pub allow_explicit: bool,
     /// Path to the yt-dlp program for the optional YouTube source. Empty = look on the PATH.
@@ -89,6 +91,7 @@ impl Default for Config {
             ipod_wallpaper_dim: 120,
             show_lyrics: true,
             lyrics_panel: false,
+            queue_panel: false,
             allow_explicit: true,
             ytdlp_path: String::new(),
             ytdlp_browser: String::new(),
