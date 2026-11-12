@@ -1,338 +1,300 @@
-//! The Themes window: presets, wallpaper, colors, and saving/sharing themes.
+//! Themes: colors, roundness and an optional wallpaper. Built-in presets plus JSON files
+//! in the user's `litewave/themes` folder (a theme is a .json file, optionally with an image
+//! next to it, so themes are easy to share).
 
-use super::App;
-use crate::art::{self, ArtKey};
-use crate::theme::{self, Theme};
-use eframe::egui::{self, pos2, vec2, Align2, FontId, Rect, Sense, Stroke};
+use eframe::egui::{self, Color32, Rounding, Stroke, Visuals};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
-impl App {
-    /// Floating Themes window (only used in iPod mode; the classic layout has a Themes page).
-    pub(super) fn themes_window(&mut self, ctx: &egui::Context) {
-        if !self.themes_open {
-            if self.view != super::View::Themes {
-                self.theme_focus = false;
-            }
-            return;
-        }
-        let mut open = true;
-        egui::Window::new("Themes")
-            .open(&mut open)
-            .default_width(380.0)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                self.themes_ui(ctx, ui);
-            });
-        if !open {
-            self.themes_open = false;
-        }
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Theme {
+    pub name: String,
+    pub author: String,
+    /// Window background, "#rrggbb".
+    pub bg: String,
+    /// Panels and cards.
+    pub panel: String,
+    pub text: String,
+    pub subtext: String,
+    pub accent: String,
+    /// 0-255. How opaque panels are when a wallpaper is set (lower shows more wallpaper).
+    pub panel_alpha: u8,
+    /// 0-255. How much the wallpaper is darkened.
+    pub dim: u8,
+    pub rounding: f32,
+    /// Wallpaper image path. Relative paths are resolved against the theme file.
+    pub background: Option<String>,
+    /// Second accent ("#rrggbb"): links, the bottom glow. Empty = same as `accent`.
+    pub accent2: String,
+    /// Border / divider color. Empty = derived from panel and text.
+    pub border: String,
+    /// Color laid over the wallpaper (with `dim` as its strength). Empty = black.
+    pub tint: String,
+    /// 0-12. Gaussian blur on the wallpaper (a soft, frosted look).
+    pub blur: u8,
+    /// 0-255. Strength of a soft `accent2` glow rising from the bottom edge.
+    pub glow: u8,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        presets().remove(0)
+    }
+}
+
+fn preset(name: &str, bg: &str, panel: &str, text: &str, sub: &str, accent: &str) -> Theme {
+    Theme {
+        name: name.to_string(),
+        author: "litewave".to_string(),
+        bg: bg.to_string(),
+        panel: panel.to_string(),
+        text: text.to_string(),
+        subtext: sub.to_string(),
+        accent: accent.to_string(),
+        panel_alpha: 200,
+        dim: 120,
+        rounding: 8.0,
+        background: None,
+        accent2: String::new(),
+        border: String::new(),
+        tint: String::new(),
+        blur: 0,
+        glow: 0,
+    }
+}
+
+pub fn presets() -> Vec<Theme> {
+    vec![
+        preset("Midnight", "#0e1014", "#171a20", "#e8eaed", "#8b929c", "#2ec4b6"),
+        preset("Greenroom", "#0b0b0b", "#161616", "#f1f1f1", "#a0a0a0", "#1ed760"),
+        preset("Sakura", "#150f13", "#201519", "#fbe9f0", "#b99aa8", "#ff7eb6"),
+        preset("Ocean", "#08121c", "#0f1d2b", "#e6f1fa", "#8aa4b8", "#4cc9f0"),
+        preset("Ember", "#140f0c", "#1f1713", "#f6ebe3", "#b3a093", "#ff9248"),
+        preset("Violet", "#100d17", "#191425", "#ece8f8", "#9a90b8", "#a78bfa"),
+        preset("Paper", "#f3f0ea", "#ffffff", "#22252b", "#6b7280", "#d9480f"),
+    ]
+}
+
+pub fn parse_hex(s: &str) -> Option<Color32> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 {
+        return None;
+    }
+    let v = u32::from_str_radix(s, 16).ok()?;
+    Some(Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
+pub fn to_hex(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+impl Theme {
+    pub fn bg(&self) -> Color32 {
+        parse_hex(&self.bg).unwrap_or(Color32::from_rgb(14, 16, 20))
+    }
+    pub fn panel(&self) -> Color32 {
+        parse_hex(&self.panel).unwrap_or(Color32::from_rgb(23, 26, 32))
+    }
+    pub fn text(&self) -> Color32 {
+        parse_hex(&self.text).unwrap_or(Color32::from_rgb(232, 234, 237))
+    }
+    pub fn subtext(&self) -> Color32 {
+        parse_hex(&self.subtext).unwrap_or(Color32::from_rgb(139, 146, 156))
+    }
+    pub fn accent(&self) -> Color32 {
+        parse_hex(&self.accent).unwrap_or(Color32::from_rgb(46, 196, 182))
     }
 
-    /// The theme gallery (Themes page only): previews with a Download button.
-    pub(super) fn theme_gallery_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        ui.add_space(18.0);
-        ui.separator();
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Theme gallery").size(18.0).strong());
-            let label = if self.store_items.is_empty() { "Load gallery" } else { "Refresh" };
-            if ui.add_enabled(!self.store_busy, egui::Button::new(label)).clicked() {
-                self.store_load();
-            }
+    pub fn accent2(&self) -> Color32 {
+        parse_hex(&self.accent2).unwrap_or_else(|| self.accent())
+    }
+    pub fn border(&self) -> Color32 {
+        parse_hex(&self.border).unwrap_or_else(|| mix(self.panel(), self.text(), 0.12))
+    }
+    pub fn tint(&self) -> Color32 {
+        parse_hex(&self.tint).unwrap_or(Color32::BLACK)
+    }
+
+    pub fn is_light(&self) -> bool {
+        let b = self.bg();
+        (0.299 * b.r() as f32 + 0.587 * b.g() as f32 + 0.114 * b.b() as f32) > 140.0
+    }
+
+    /// Pushes this theme into egui's visuals. `wallpaper` makes panels translucent.
+    pub fn apply(&self, ctx: &egui::Context, wallpaper: bool) {
+        let light = self.is_light();
+        let mut v = if light { Visuals::light() } else { Visuals::dark() };
+        let (panel, text, accent) = (self.panel(), self.text(), self.accent());
+        let alpha = if wallpaper { self.panel_alpha } else { 255 };
+
+        v.panel_fill = Color32::from_rgba_unmultiplied(panel.r(), panel.g(), panel.b(), alpha);
+        v.window_fill = panel;
+        v.extreme_bg_color = mix(panel, if light { Color32::WHITE } else { Color32::BLACK }, 0.35);
+        v.faint_bg_color = mix(panel, text, 0.05);
+        v.override_text_color = Some(text);
+        v.selection.bg_fill = mix(panel, accent, 0.45);
+        v.selection.stroke = Stroke::new(1.0, accent);
+        v.hyperlink_color = self.accent2();
+
+        let r = Rounding::same(self.rounding.clamp(0.0, 20.0));
+        let base = mix(panel, text, 0.08);
+        let hover = mix(panel, text, 0.16);
+        let active = mix(panel, accent, 0.5);
+        v.widgets.inactive.weak_bg_fill = base;
+        v.widgets.inactive.bg_fill = base;
+        v.widgets.hovered.weak_bg_fill = hover;
+        v.widgets.hovered.bg_fill = hover;
+        v.widgets.active.weak_bg_fill = active;
+        v.widgets.active.bg_fill = active;
+        v.widgets.noninteractive.rounding = r;
+        for w in [
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+            &mut v.widgets.open,
+        ] {
+            w.rounding = r;
+            w.bg_stroke = Stroke::NONE;
+        }
+        v.window_rounding = Rounding::same((self.rounding * 1.5).clamp(0.0, 28.0));
+        v.window_stroke = Stroke::new(1.0, self.border());
+        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, self.border());
+        ctx.set_visuals(v);
+        // Roomier, calmer spacing: more padding in buttons, thin floating scrollbars.
+        ctx.style_mut(|st| {
+            st.spacing.item_spacing = egui::vec2(8.0, 7.0);
+            st.spacing.button_padding = egui::vec2(12.0, 6.0);
+            st.spacing.interact_size.y = 28.0;
+            st.spacing.scroll = egui::style::ScrollStyle::floating();
         });
-        if !self.store_note.is_empty() {
-            ui.weak(self.store_note.clone());
+    }
+}
+
+// ---- user themes on disk ---------------------------------------------------
+
+pub fn themes_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("litewave").join("themes"))
+}
+
+pub fn import_theme(path: &Path) -> Option<Theme> {
+    let mut t: Theme = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    if t.name.trim().is_empty() {
+        t.name = path.file_stem()?.to_string_lossy().into_owned();
+    }
+    if let (Some(b), Some(dir)) = (t.background.as_mut(), path.parent()) {
+        if Path::new(b.as_str()).is_relative() {
+            *b = dir.join(b.as_str()).to_string_lossy().into_owned();
         }
-        ui.add_space(8.0);
-        let mut install = None;
-        let items = self.store_items.clone();
-        // egui does not wrap whole cards, so lay them out in rows of as many as fit the width.
-        let gap = 12.0;
-        let card = 236.0;
-        let cols = (((ui.available_width() + gap) / (card + gap)).floor() as usize).max(1);
-        for row in items.chunks(cols) {
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing = vec2(gap, gap);
-                for item in row.iter() {
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        // A frame inherits its parent's layout (left to right here), so stack
-                        // the card contents vertically on purpose.
-                        ui.vertical(|ui| {
-                            ui.set_width(220.0);
-                            let size = vec2(220.0, 165.0);
-                            let tex = if item.preview.starts_with("https://") {
-                                self.art.get(ctx, &ArtKey::UrlWide(item.preview.clone()), art::BIG)
-                            } else {
-                                None
-                            };
-                            match tex {
-                                Some(id) => {
-                                    ui.add(egui::Image::new(egui::load::SizedTexture::new(id, size)).rounding(8.0));
-                                }
-                                None => {
-                                    let (r, _) = ui.allocate_exact_size(size, Sense::hover());
-                                    ui.painter().rect_filled(r, 8.0, ui.visuals().faint_bg_color);
-                                }
-                            }
-                            ui.label(egui::RichText::new(&item.name).strong());
-                            if !item.author.is_empty() {
-                                ui.weak(format!("by {}", item.author));
-                            }
-                            if !item.description.is_empty() {
-                                ui.label(egui::RichText::new(&item.description).size(12.0));
-                            }
-                            if ui.add_enabled(!self.store_busy, egui::Button::new("Download")).clicked() {
-                                install = Some(item.clone());
-                            }
-                        });
-                    });
+    }
+    Some(t)
+}
+
+pub fn load_user_themes() -> Vec<Theme> {
+    let Some(dir) = themes_dir() else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut out: Vec<Theme> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |x| x == "json"))
+        .filter_map(|p| import_theme(&p))
+        .collect();
+    out.sort_by_key(|t| t.name.to_lowercase());
+    out
+}
+
+pub fn all_themes() -> Vec<Theme> {
+    let mut v = presets();
+    v.extend(load_user_themes());
+    v
+}
+
+/// Saves `t` as `<name>.json` in the themes folder. A wallpaper is copied next to it so the
+/// pair can be shared. Returns the theme with its wallpaper path resolved.
+pub fn save_user_theme(t: &Theme) -> Result<Theme, String> {
+    let dir = themes_dir().ok_or("No config directory available")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut slug: String = t
+        .name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    if slug.trim_matches('-').is_empty() {
+        slug = "theme".to_string();
+    }
+
+    let mut saved = t.clone();
+    if let Some(bg) = &t.background {
+        let src = Path::new(bg);
+        if src.is_file() {
+            if let Some(ext) = src.extension().and_then(|e| e.to_str()) {
+                let file = format!("{slug}.{ext}");
+                let dest = dir.join(&file);
+                if src != dest.as_path() {
+                    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
                 }
-            });
+                saved.background = Some(file);
+            }
         }
-        if let Some(i) = install {
-            self.store_install(i);
+    }
+    let json = serde_json::to_string_pretty(&saved).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(format!("{slug}.json")), json).map_err(|e| e.to_string())?;
+
+    if let Some(b) = saved.background.as_mut() {
+        if Path::new(b.as_str()).is_relative() {
+            *b = dir.join(b.as_str()).to_string_lossy().into_owned();
+        }
+    }
+    Ok(saved)
+}
+
+pub fn open_folder(dir: &Path) {
+    let _ = std::fs::create_dir_all(dir);
+    #[cfg(target_os = "windows")]
+    let prog = "explorer";
+    #[cfg(target_os = "macos")]
+    let prog = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let prog = "xdg-open";
+    let _ = std::process::Command::new(prog).arg(dir).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_round_trip() {
+        let c = parse_hex("#2ec4b6").unwrap();
+        assert_eq!(to_hex(c), "#2ec4b6");
+        assert!(parse_hex("nope").is_none());
+    }
+
+    #[test]
+    fn presets_parse() {
+        for t in presets() {
+            assert!(parse_hex(&t.bg).is_some(), "{}", t.name);
+            assert!(parse_hex(&t.accent).is_some(), "{}", t.name);
         }
     }
 
-    /// The Themes controls, shared by the floating window and the Themes page.
-    pub(super) fn themes_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        if self.theme_name.is_empty() {
-            self.theme_name = self.cfg.theme.name.clone();
-        }
+    #[test]
+    fn new_fields_are_optional() {
+        let t: Theme = serde_json::from_str(r##"{"name":"x","glow":90,"blur":6,"tint":"#102030"}"##).unwrap();
+        assert_eq!(t.glow, 90);
+        assert_eq!(t.tint(), Color32::from_rgb(0x10, 0x20, 0x30));
+        assert_eq!(t.accent2(), t.accent());
+    }
 
-        let mut changed = false;
-        let mut pick: Option<Theme> = None;
-        let mut choose_bg = false;
-        let mut clear_bg = false;
-        let mut save = false;
-        let mut open_dir = false;
-        let mut reload = false;
-        let mut focus = false;
-        let mut new_quality: Option<u8> = None;
-
-        {
-            {
-                ui.label("Presets");
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    for t in self.theme_list.iter() {
-                        let (rect, resp) = ui.allocate_exact_size(vec2(84.0, 54.0), Sense::click());
-                        let p = ui.painter();
-                        p.rect_filled(rect, 8.0, t.bg());
-                        let inner = Rect::from_min_max(
-                            pos2(rect.min.x + 6.0, rect.min.y + 6.0),
-                            pos2(rect.max.x - 6.0, rect.min.y + 28.0),
-                        );
-                        p.rect_filled(inner, 5.0, t.panel());
-                        p.circle_filled(pos2(inner.max.x - 10.0, inner.center().y), 5.0, t.accent());
-                        p.text(
-                            pos2(rect.center().x, rect.max.y - 12.0),
-                            Align2::CENTER_CENTER,
-                            &t.name,
-                            FontId::proportional(11.0),
-                            t.text(),
-                        );
-                        if t.name == self.cfg.theme.name {
-                            p.rect_stroke(rect, 8.0, Stroke::new(2.0, t.accent()));
-                        }
-                        if resp.clicked() {
-                            pick = Some(t.clone());
-                        }
-                        resp.on_hover_text(&t.name);
-                    }
-                });
-
-                ui.separator();
-                ui.label("Wallpaper");
-                ui.horizontal(|ui| {
-                    if ui.button("Choose image...").clicked() {
-                        choose_bg = true;
-                    }
-                    if ui.button("Remove").clicked() {
-                        clear_bg = true;
-                    }
-                });
-                let bg_label = match &self.cfg.theme.background {
-                    Some(p) => std::path::Path::new(p)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| p.clone()),
-                    None => "None. You can also drop an image onto the window.".to_string(),
-                };
-                ui.weak(bg_label);
-                ui.horizontal(|ui| {
-                    ui.label("Quality");
-                    for (i, label) in ["Low", "Medium", "High", "Ultra"].iter().enumerate() {
-                        if ui
-                            .selectable_label(self.cfg.wallpaper_quality as usize == i, *label)
-                            .clicked()
-                        {
-                            new_quality = Some(i as u8);
-                        }
-                    }
-                });
-                ui.weak("RAM: Low ~4 MB, Medium ~8 MB, High ~15 MB, Ultra ~33 MB");
-                if let Some(tex) = &self.bg_tex {
-                    let [w, h] = tex.size();
-                    let mut info = format!("Loaded at {w}x{h}.");
-                    if (w as f32) < ctx.screen_rect().width() {
-                        info.push_str(" Smaller than this window, so it will look a bit soft.");
-                    }
-                    ui.weak(info);
-                }
-
-                ui.separator();
-                egui::Grid::new("theme_colors")
-                    .num_columns(2)
-                    .spacing([12.0, 6.0])
-                    .show(ui, |ui| {
-                        for (label, which) in [("Accent", 0), ("Background", 1), ("Panels", 2), ("Text", 3)] {
-                            ui.label(label);
-                            let t = &mut self.cfg.theme;
-                            let mut c = match which {
-                                0 => t.accent(),
-                                1 => t.bg(),
-                                2 => t.panel(),
-                                _ => t.text(),
-                            };
-                            if egui::color_picker::color_edit_button_srgba(
-                                ui,
-                                &mut c,
-                                egui::color_picker::Alpha::Opaque,
-                            )
-                            .changed()
-                            {
-                                let h = theme::to_hex(c);
-                                match which {
-                                    0 => t.accent = h,
-                                    1 => t.bg = h,
-                                    2 => t.panel = h,
-                                    _ => t.text = h,
-                                }
-                                t.subtext = theme::to_hex(theme::mix(t.text(), t.bg(), 0.5));
-                                changed = true;
-                            }
-                            ui.end_row();
-                        }
-                    });
-
-                ui.add_space(4.0);
-                let mut opacity = self.cfg.theme.panel_alpha as f32 / 255.0 * 100.0;
-                if ui
-                    .add(egui::Slider::new(&mut opacity, 20.0..=100.0).text("Panel opacity %"))
-                    .changed()
-                {
-                    self.cfg.theme.panel_alpha = (opacity / 100.0 * 255.0).round() as u8;
-                    changed = true;
-                }
-                let mut dim = self.cfg.theme.dim as f32;
-                if ui
-                    .add(egui::Slider::new(&mut dim, 0.0..=230.0).text("Wallpaper dim"))
-                    .changed()
-                {
-                    self.cfg.theme.dim = dim as u8;
-                    changed = true;
-                }
-                let mut round = self.cfg.theme.rounding;
-                if ui
-                    .add(egui::Slider::new(&mut round, 0.0..=18.0).text("Roundness"))
-                    .changed()
-                {
-                    self.cfg.theme.rounding = round;
-                    changed = true;
-                }
-                let mut blur = self.cfg.theme.blur as f32;
-                if ui
-                    .add(egui::Slider::new(&mut blur, 0.0..=12.0).text("Wallpaper blur"))
-                    .changed()
-                {
-                    self.cfg.theme.blur = blur.round() as u8;
-                    changed = true;
-                }
-                let mut glow = self.cfg.theme.glow as f32;
-                if ui
-                    .add(egui::Slider::new(&mut glow, 0.0..=160.0).text("Accent glow"))
-                    .changed()
-                {
-                    self.cfg.theme.glow = glow.round() as u8;
-                    changed = true;
-                }
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let r = ui.add(egui::TextEdit::singleline(&mut self.theme_name).desired_width(140.0));
-                    focus = r.has_focus();
-                    if ui.button("Save theme").clicked() {
-                        save = true;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Open themes folder").clicked() {
-                        open_dir = true;
-                    }
-                    if ui.button("Reload").clicked() {
-                        reload = true;
-                    }
-                });
-                ui.weak("Share a theme: send the .json (and its image) from the themes folder.");
-            }
-        }
-
-        self.theme_focus = focus;
-
-        if let Some(t) = pick {
-            let keep = self.cfg.theme.background.clone();
-            self.cfg.theme = t;
-            if self.cfg.theme.background.is_none() {
-                self.cfg.theme.background = keep;
-            }
-            self.theme_name = self.cfg.theme.name.clone();
-            changed = true;
-        }
-        if choose_bg {
-            if let Some(p) = rfd::FileDialog::new()
-                .add_filter("Image", &["png", "jpg", "jpeg", "webp"])
-                .pick_file()
-            {
-                self.cfg.theme.background = Some(p.to_string_lossy().into_owned());
-                changed = true;
-            }
-        }
-        if clear_bg {
-            self.cfg.theme.background = None;
-            changed = true;
-        }
-        if let Some(q) = new_quality {
-            if q != self.cfg.wallpaper_quality {
-                self.cfg.wallpaper_quality = q;
-                self.bg_path = None;
-                changed = true;
-            }
-        }
-        if save {
-            let mut t = self.cfg.theme.clone();
-            t.name = self.theme_name.trim().to_string();
-            if t.name.is_empty() {
-                t.name = "My theme".to_string();
-            }
-            match theme::save_user_theme(&t) {
-                Ok(saved) => {
-                    self.cfg.theme = saved;
-                    self.theme_list = theme::all_themes();
-                    changed = true;
-                }
-                Err(e) => self.error = Some(format!("Could not save theme: {e}")),
-            }
-        }
-        if reload {
-            self.theme_list = theme::all_themes();
-        }
-        if open_dir {
-            if let Some(dir) = theme::themes_dir() {
-                theme::open_folder(&dir);
-            }
-        }
-        if changed {
-            self.theme_changed(ctx);
-        }
+    #[test]
+    fn partial_json_uses_defaults() {
+        let t: Theme = serde_json::from_str(r##"{"name":"x","accent":"#ff0000"}"##).unwrap();
+        assert_eq!(t.accent, "#ff0000");
+        assert_eq!(t.rounding, Theme::default().rounding);
     }
 }
