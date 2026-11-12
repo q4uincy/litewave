@@ -16,7 +16,7 @@ use crate::theme::{self, Theme};
 use eframe::egui::{self, pos2, Color32, Key, Modifiers, Rect};
 use ipod::{IpodState, Load, Node};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::mpsc::{channel, Receiver, Sender},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -29,6 +29,8 @@ pub(crate) const GUIDE_URL: &str = "https://q4uincy.github.io/litewave/setup-gui
 
 const SEEK_STEP: f32 = 5.0;
 const VOLUME_STEP: f32 = 0.05;
+/// How many songs the Recent tab remembers.
+const RECENT_MAX: usize = 30;
 
 pub enum Action {
     Play(usize),
@@ -86,7 +88,12 @@ pub enum Action {
     QueueAdd(Track),
     QueueRemove(usize),
     QueueClear,
+    /// Opens or closes the Queue / Recent panel.
     OpenQueue,
+    /// Plays a song from the Recent tab right away (the list it came from is kept for later).
+    PlayRecent(usize),
+    /// Plays a queued song now (it leaves the queue).
+    QueuePlay(usize),
     /// The "..." button of a song row: the song and where to open its menu.
     RowMenu(Track, egui::Pos2),
 }
@@ -99,7 +106,6 @@ pub enum View {
     Themes,
     Settings,
     Account,
-    Queue,
 }
 
 /// Result of a Spotify sign-in: browsing client, playback engine, playback refresh token,
@@ -229,6 +235,12 @@ pub struct App {
     store_rx: Receiver<StoreMsg>,
     /// Songs queued with "Play next" / "Add to queue".
     pub(crate) queue: Vec<Track>,
+    /// The last few songs that were played, newest first (memory only, capped).
+    pub(crate) recent: VecDeque<Track>,
+    /// Which tab of the queue panel is shown: false = Queue, true = Recent.
+    pub(crate) queue_recent_tab: bool,
+    /// When the sidebar last asked for the playlist list (so a failed load is not retried every frame).
+    pub(crate) side_fetch: Option<Instant>,
     /// The list position to continue from after queued songs.
     queue_resume: Option<usize>,
     pub(crate) row_menu: Option<(Track, egui::Pos2, Instant)>,
@@ -345,6 +357,9 @@ impl App {
             store_tx,
             store_rx,
             queue: Vec::new(),
+            recent: VecDeque::new(),
+            queue_recent_tab: false,
+            side_fetch: None,
             queue_resume: None,
             row_menu: None,
             sp_typed: Instant::now(),
@@ -780,6 +795,7 @@ impl App {
 
     /// Library lists are cached for a while; saving or removing something makes them stale.
     fn forget_library_pages(&mut self) {
+        self.side_fetch = None;
         for n in [Node::SpLiked, Node::SpPlaylists, Node::SpAlbums, Node::SpArtists, Node::SpShows] {
             self.page_cache.remove(&format!("{n:?}"));
         }
@@ -1328,7 +1344,9 @@ impl App {
                         }
                     }
                 }
-                self.now = Some(track.clone());
+                let played = track.clone();
+                self.now = Some(played.clone());
+                self.note_recent(played);
                 self.current = Some(i);
                 self.shuffle_seen.insert(i);
                 self.error = None;
@@ -1796,6 +1814,13 @@ impl App {
             return false;
         }
         let t = self.queue.remove(0);
+        self.play_extra(t);
+        true
+    }
+
+    /// Plays a song that is not in the active list (a queued or recent one). The list position is
+    /// remembered so the list carries on from there afterwards.
+    fn play_extra(&mut self, t: Track) {
         if let Some(c) = self.current {
             if self.filtered.contains(&c) {
                 self.queue_resume = Some(c);
@@ -1804,7 +1829,22 @@ impl App {
         self.tracks.push(t);
         let i = self.tracks.len() - 1;
         self.play_index(i, true);
-        true
+    }
+
+    /// Puts a song at the front of the Recent list (no duplicates, at most `RECENT_MAX`).
+    fn note_recent(&mut self, t: Track) {
+        let same = |a: &Track, b: &Track| {
+            if a.spotify_id.is_some() || b.spotify_id.is_some() {
+                a.spotify_id == b.spotify_id
+            } else if a.yt_id.is_some() || b.yt_id.is_some() {
+                a.yt_id == b.yt_id
+            } else {
+                a.path == b.path
+            }
+        };
+        self.recent.retain(|r| !same(r, &t));
+        self.recent.push_front(t);
+        self.recent.truncate(RECENT_MAX);
     }
 
     fn on_finished(&mut self) {
@@ -1845,7 +1885,25 @@ impl App {
                 }
             }
             Action::QueueClear => self.queue.clear(),
-            Action::OpenQueue => self.view = View::Queue,
+            Action::OpenQueue => {
+                self.cfg.queue_panel = !self.cfg.queue_panel;
+                if self.cfg.queue_panel {
+                    // One right-hand panel at a time.
+                    self.cfg.lyrics_panel = false;
+                }
+                self.cfg_dirty = true;
+            }
+            Action::QueuePlay(k) => {
+                if k < self.queue.len() {
+                    let t = self.queue.remove(k);
+                    self.play_extra(t);
+                }
+            }
+            Action::PlayRecent(k) => {
+                if let Some(t) = self.recent.get(k).cloned() {
+                    self.play_extra(t);
+                }
+            }
             Action::RowMenu(t, pos) => self.row_menu = Some((t, pos, Instant::now())),
             Action::Prev => self.prev(),
             Action::Seek(s) => self.seek(s),
@@ -2107,6 +2165,7 @@ impl App {
                 self.cfg.lyrics_panel = !self.cfg.lyrics_panel;
                 if self.cfg.lyrics_panel {
                     self.cfg.show_lyrics = true;
+                    self.cfg.queue_panel = false;
                 }
                 self.cfg_dirty = true;
             }
