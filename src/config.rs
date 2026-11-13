@@ -70,6 +70,8 @@ pub struct Config {
     pub spotify_normalise: bool,
     /// Spotify gapless playback.
     pub spotify_gapless: bool,
+    /// Windows: the window's close button hides litewave to the tray icon instead of quitting.
+    pub close_to_tray: bool,
 }
 
 impl Default for Config {
@@ -102,6 +104,7 @@ impl Default for Config {
             spotify_quality: 1,
             spotify_normalise: true,
             spotify_gapless: true,
+            close_to_tray: false,
         }
     }
 }
