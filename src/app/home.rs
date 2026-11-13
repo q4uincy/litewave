@@ -23,6 +23,21 @@ const CARD_GAP: f32 = 12.0;
 /// No shelf shows more cards than this, however wide the window is.
 const SHELF_MAX: usize = 10;
 
+/// Spotify's own "made for you" playlists, recognised by name (the list does not keep owners).
+fn is_made_for_you(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.starts_with("daily mix")
+        || n.starts_with("discover weekly")
+        || n.starts_with("release radar")
+        || n.starts_with("on repeat")
+        || n.starts_with("repeat rewind")
+        || n.starts_with("time capsule")
+        || n.starts_with("your top songs")
+        || n.starts_with("your summer rewind")
+        || n.starts_with("new music friday")
+        || n.starts_with("this is ")
+}
+
 fn greeting() -> &'static str {
     use chrono::Timelike;
     match chrono::Local::now().hour() {
@@ -159,7 +174,7 @@ impl App {
     fn cached_items(&self, key: &str) -> Vec<Item> {
         self.page_cache
             .get(key)
-            .map(|(_, items, _)| items.iter().take(SHELF_MAX + 12).cloned().collect())
+            .map(|(_, items, _)| items.iter().take(SHELF_MAX + 70).cloned().collect())
             .unwrap_or_default()
     }
 
@@ -172,13 +187,14 @@ impl App {
         text: Color32,
         sub: Color32,
     ) {
-        for n in [Node::SpPlaylists, Node::SpAlbums, Node::SpArtists] {
+        for n in [Node::SpPlaylists, Node::SpAlbums, Node::SpArtists, Node::SpShows] {
             self.want_list(n);
         }
         let base = ui.visuals().panel_fill;
         let playlists = self.cached_items("SpPlaylists");
         let albums = self.cached_items("SpAlbums");
         let artists = self.cached_items("SpArtists");
+        let shows = self.cached_items("SpShows");
 
         // Greeting tiles: Liked Songs first, then playlists and albums taking turns.
         let avail = ui.available_width();
@@ -230,11 +246,24 @@ impl App {
                 go: Click::Recent(k),
             })
             .collect();
+        let user = self.sp_user.clone();
+        let mixes: Vec<Item> = playlists
+            .iter()
+            .filter(|it| {
+                let n = it.label.to_lowercase();
+                n.ends_with(" mix") && !n.starts_with("daily mix")
+            })
+            .cloned()
+            .collect();
+        let made: Vec<Item> = playlists.iter().filter(|it| is_made_for_you(&it.label)).cloned().collect();
         let shelves: Vec<(&str, Option<Node>, Vec<Card>)> = vec![
-            ("Recently played", None, recent),
+            ("Recents", None, recent),
+            ("Made for you", Some(Node::SpPlaylists), from_items(&made, "Made for you", false)),
             ("Your playlists", Some(Node::SpPlaylists), from_items(&playlists, "Playlist", false)),
             ("Your albums", Some(Node::SpAlbums), from_items(&albums, "Album", false)),
+            ("Your top mixes", Some(Node::SpPlaylists), from_items(&mixes, "Made for you", false)),
             ("Your artists", Some(Node::SpArtists), from_items(&artists, "Artist", true)),
+            ("Your podcasts", Some(Node::SpShows), from_items(&shows, "Podcast", false)),
         ];
 
         let mut clicked: Option<Click> = None;
@@ -245,10 +274,29 @@ impl App {
                 ui.spacing_mut().item_spacing = vec2(TILE_GAP, TILE_GAP);
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(greeting()).size(30.0).strong().color(text));
+                ui.add_space(2.0);
+                let fid = egui::Id::new("home_filter");
+                let mut filter: u8 = ui.data(|d| d.get_temp::<u8>(fid)).unwrap_or(0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for (i, label) in ["All", "Music", "Podcasts"].iter().enumerate() {
+                        let on = filter == i as u8;
+                        let chip = egui::Button::new(
+                            egui::RichText::new(*label).size(13.5).strong().color(if on { base } else { text }),
+                        )
+                        .fill(if on { text } else { mix(base, text, 0.12) })
+                        .rounding(18.0)
+                        .min_size(vec2(0.0, 32.0));
+                        if ui.add(chip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            filter = i as u8;
+                        }
+                    }
+                });
+                ui.data_mut(|d| d.insert_temp(fid, filter));
                 ui.add_space(6.0);
 
                 let w = ((ui.available_width() - TILE_GAP * (cols as f32 - 1.0)) / cols as f32).max(80.0);
-                for row in tiles.chunks(cols) {
+                for row in tiles.chunks(cols).filter(|_| filter != 2) {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = TILE_GAP;
                         for t in row {
@@ -260,12 +308,18 @@ impl App {
                 }
 
                 for (title, all, cards) in &shelves {
-                    if cards.is_empty() {
+                    let podcast = *title == "Your podcasts";
+                    if cards.is_empty() || (filter == 1 && podcast) || (filter == 2 && !podcast) {
                         continue;
                     }
                     ui.add_space(14.0);
+                    let named = *title == "Made for you" && !user.is_empty();
+                    if named {
+                        ui.label(egui::RichText::new("Made For").size(12.0).color(sub));
+                    }
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(*title).size(22.0).strong().color(text));
+                        let head: &str = if named { user.as_str() } else { *title };
+                        ui.label(egui::RichText::new(head).size(22.0).strong().color(text));
                         if let Some(n) = all {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let r = ui
