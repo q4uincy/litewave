@@ -638,6 +638,11 @@ impl Client {
             .collect())
     }
 
+    pub fn user_name(&self) -> Result<String, String> {
+        let me = self.get(&format!("{API}/me"))?;
+        Ok(me["display_name"].as_str().unwrap_or("").to_string())
+    }
+
     pub fn liked(&self) -> Result<Vec<Track>, String> {
         let items = self.collect(format!("{API}/me/tracks?limit=50"), None)?;
         Ok(items
