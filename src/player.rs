@@ -26,6 +26,7 @@ impl Player {
     pub fn new(volume: f32) -> Result<Self, String> {
         let (stream, handle) =
             OutputStream::try_default().map_err(|e| format!("No audio output device: {e}"))?;
+        crate::audio_tap::set_local_volume(volume);
         Ok(Self {
             _stream: stream,
             handle,
@@ -116,6 +117,7 @@ impl Player {
 
     pub fn set_volume(&mut self, v: f32) {
         self.volume = v.clamp(0.0, 1.0);
+        crate::audio_tap::set_local_volume(self.volume);
         if let Some(s) = &self.sink {
             s.set_volume(self.volume);
         }
