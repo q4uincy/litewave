@@ -83,6 +83,8 @@ pub struct Item {
     pub kind: Kind,
     /// Cover image URL for Spotify rows.
     pub art: Option<String>,
+    /// Second line for Spotify rows: the artist of an album, the owner of a playlist (empty when unknown).
+    pub sub: String,
 }
 
 #[derive(Clone, PartialEq)]
@@ -130,6 +132,7 @@ fn item(label: &str, kind: Kind) -> Item {
         label: label.to_string(),
         kind,
         art: None,
+        sub: String::new(),
     }
 }
 
@@ -141,6 +144,7 @@ fn play_page(tracks: Vec<Track>) -> (Vec<Item>, Vec<Track>) {
             label: t.title.clone(),
             kind: Kind::Play(i),
             art: None,
+            sub: String::new(),
         })
         .collect();
     (items, tracks)
@@ -151,10 +155,12 @@ fn entries_page(entries: Vec<spotify::Entry>, make: impl Fn(String, String) -> N
         .into_iter()
         .map(|e| {
             let art = e.art.clone();
+            let sub = e.sub.clone();
             Item {
                 label: e.name.clone(),
                 kind: Kind::Open(make(e.id, e.name)),
                 art,
+                sub,
             }
         })
         .collect()
@@ -170,6 +176,7 @@ fn search_page(r: spotify::SearchResults) -> (Vec<Item>, Vec<Track>) {
                 label: t.title.clone(),
                 kind: Kind::Play(i),
                 art: None,
+                sub: String::new(),
             });
         }
     }
@@ -290,6 +297,7 @@ impl App {
                         label: a.clone(),
                         kind: Kind::Open(Node::LocalArtist(a)),
                         art: None,
+                        sub: String::new(),
                     })
                     .collect();
             }
@@ -302,6 +310,7 @@ impl App {
                         label: album_label(&al),
                         kind: Kind::Open(Node::LocalAlbum(a, al)),
                         art: None,
+                        sub: String::new(),
                     })
                     .collect();
             }
@@ -320,6 +329,7 @@ impl App {
                         label: album_label(&al),
                         kind: Kind::Open(Node::LocalAlbum(ar, al)),
                         art: None,
+                        sub: String::new(),
                     })
                     .collect();
             }
