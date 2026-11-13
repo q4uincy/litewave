@@ -169,6 +169,17 @@ impl App {
             sep(ui);
             row(
                 ui,
+                "Visualizer",
+                "Animated spectrum bars behind the player bar while music plays.",
+                |ui| {
+                    if toggle(ui, &mut self.cfg.show_viz, accent).changed() {
+                        dirty = true;
+                    }
+                },
+            );
+            sep(ui);
+            row(
+                ui,
                 "Sleep timer",
                 "Pauses playback after a while.",
                 |ui| {
@@ -261,6 +272,76 @@ impl App {
                     },
                 );
             }
+        });
+
+        // ---- equalizer -----------------------------------------------------
+        section(ui, "Equalizer", |ui| {
+            row(
+                ui,
+                "Equalizer",
+                "Shape the sound with 10 bands. Works for local songs and Spotify.",
+                |ui| {
+                    if toggle(ui, &mut self.cfg.eq_enabled, accent).changed() {
+                        crate::eq::set_enabled(self.cfg.eq_enabled);
+                        dirty = true;
+                    }
+                },
+            );
+            sep(ui);
+            row(ui, "Preset", "Pick a starting point, then fine-tune the sliders.", |ui| {
+                let current = crate::eq::PRESETS
+                    .iter()
+                    .find(|(_, g)| *g == self.cfg.eq_gains)
+                    .map_or("Custom", |(n, _)| *n);
+                egui::ComboBox::from_id_source("eq_preset")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (name, g) in crate::eq::PRESETS.iter() {
+                            if ui.selectable_label(current == *name, *name).clicked() {
+                                self.cfg.eq_gains = *g;
+                                crate::eq::set_all(g);
+                                dirty = true;
+                            }
+                        }
+                    });
+            });
+            sep(ui);
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().slider_width = 120.0;
+                let labels = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
+                for i in 0..crate::eq::BANDS {
+                    ui.vertical(|ui| {
+                        ui.set_width(56.0);
+                        ui.vertical_centered(|ui| {
+                            let mut v = self.cfg.eq_gains[i];
+                            let r = ui.add(
+                                egui::Slider::new(&mut v, -crate::eq::MAX_DB..=crate::eq::MAX_DB)
+                                    .vertical()
+                                    .show_value(false)
+                                    .step_by(0.5),
+                            );
+                            if r.double_clicked() {
+                                v = 0.0;
+                            }
+                            if v != self.cfg.eq_gains[i] {
+                                self.cfg.eq_gains[i] = v;
+                                crate::eq::set_band(i, v);
+                                dirty = true;
+                            }
+                            let db = if v == 0.0 { "0".to_string() } else { format!("{v:+.1}") };
+                            ui.label(RichText::new(db).size(11.0));
+                            ui.label(RichText::new(labels[i]).size(11.0).color(weak));
+                        });
+                    });
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Hz. Double-click a slider to reset it. The volume is lowered a little when you boost, so the sound does not distort.")
+                    .size(12.0)
+                    .color(weak),
+            );
         });
 
         // ---- library -------------------------------------------------------
@@ -397,6 +478,8 @@ impl App {
             fresh.spotify_refresh = old.spotify_refresh;
             fresh.spotify_browse_refresh = old.spotify_browse_refresh;
             self.cfg = fresh;
+            crate::eq::set_all(&self.cfg.eq_gains);
+            crate::eq::set_enabled(self.cfg.eq_enabled);
             ctx.set_zoom_factor(self.cfg.ui_scale);
             self.theme_changed(&ctx);
             quality_changed = true;
