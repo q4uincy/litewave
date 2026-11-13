@@ -248,6 +248,19 @@ impl App {
                     }
                 },
             );
+            if cfg!(windows) {
+                sep(ui);
+                row(
+                    ui,
+                    "Close button hides to tray",
+                    "The X keeps litewave playing in the tray icon (bottom right). Quit from the tray menu.",
+                    |ui| {
+                        if toggle(ui, &mut self.cfg.close_to_tray, accent).changed() {
+                            dirty = true;
+                        }
+                    },
+                );
+            }
         });
 
         // ---- library -------------------------------------------------------
@@ -300,6 +313,17 @@ impl App {
                 |ui| {
                     if ui.button("Check for updates").clicked() {
                         crate::update::request_check();
+                    }
+                },
+            );
+            sep(ui);
+            row(
+                ui,
+                "What's new",
+                "See what changed in this version.",
+                |ui| {
+                    if ui.button("Show").clicked() {
+                        crate::update::request_whats_new();
                     }
                 },
             );
