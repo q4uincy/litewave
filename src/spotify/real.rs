@@ -877,6 +877,7 @@ impl librespot::playback::audio_backend::Sink for LowLatencySink {
             .map_err(|e| librespot::playback::audio_backend::SinkError::OnWrite(format!("{e:?}")))?;
         let gain = self.volume.attenuation_factor();
         let out: Vec<f32> = samples.iter().map(|&x| (x * gain) as f32).collect();
+        crate::audio_tap::push_interleaved(&out, 2);
         self.sink
             .append(rodio::buffer::SamplesBuffer::new(2, 44100, out));
         // About 6 chunks (roughly 0.1 s) may wait in the queue.
