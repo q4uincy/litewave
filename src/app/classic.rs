@@ -3,7 +3,7 @@
 use super::ipod::{Item, Kind, Load, Node};
 use super::widgets::{
     bar, hub_icon, icon_button, initial, mode_button, nav_button, paint_hub_tile, search_bar,
-    tint_for, Icon,
+    tint_for, HubIcon, Icon,
     ModeIcon,
 };
 use super::{buffering_text, fmt_time, loading_hint, Action, App, Dialog, View, BUG_URL};
@@ -285,30 +285,58 @@ fn list_controls(
     }
 }
 
-const SIDE_ROW_H: f32 = 54.0;
+const SIDE_ROW_H: f32 = 64.0;
 
-/// Sidebar playlist row: small cover and the name. Returns true when clicked.
-fn side_playlist_row(ui: &mut egui::Ui, tex: Option<TextureId>, name: &str, on: bool, text: Color32, sub: Color32) -> bool {
+/// Sidebar library row, Spotify style: a 48 px rounded cover, the name (green while it is the open
+/// page) and a grey second line. `liked` draws the purple heart tile. Returns true when clicked.
+#[allow(clippy::too_many_arguments)]
+fn side_playlist_row(
+    ui: &mut egui::Ui,
+    tex: Option<TextureId>,
+    name: &str,
+    line: &str,
+    liked: bool,
+    on: bool,
+    accent: Color32,
+    text: Color32,
+    sub: Color32,
+) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SIDE_ROW_H), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 8.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    if !ui.is_rect_visible(rect) {
+        return false;
     }
-    let cy = rect.center().y;
-    let p = ui.painter();
-    paint_cover(p, Rect::from_center_size(pos2(rect.min.x + 30.0, cy), vec2(42.0, 42.0)), tex, name);
-    let clip = p.with_clip_rect(Rect::from_min_max(pos2(rect.min.x + 58.0, rect.min.y), pos2(rect.max.x - 6.0, rect.max.y)));
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let cover = Rect::from_min_size(pos2(rect.min.x + 8.0, rect.center().y - 24.0), vec2(48.0, 48.0));
+    if liked {
+        paint_hub_tile(ui.painter(), cover, HubIcon::Liked);
+    } else if let Some(id) = tex {
+        ui.put(
+            cover,
+            egui::Image::new(egui::load::SizedTexture::new(id, cover.size()))
+                .fit_to_exact_size(cover.size())
+                .rounding(egui::Rounding::same(5.0)),
+        );
+    } else {
+        paint_cover(ui.painter(), cover, None, name);
+    }
+    let x = cover.max.x + 12.0;
+    let clip = ui
+        .painter()
+        .with_clip_rect(Rect::from_min_max(pos2(x, rect.min.y), pos2(rect.max.x - 8.0, rect.max.y)));
     clip.text(
-        pos2(rect.min.x + 58.0, cy - 8.0),
+        pos2(x, rect.center().y - 10.0),
         Align2::LEFT_CENTER,
         name,
-        FontId::proportional(14.0),
-        if on { text } else { text.gamma_multiply(0.92) },
+        FontId::proportional(15.5),
+        if on { accent } else { text },
     );
     clip.text(
-        pos2(rect.min.x + 58.0, cy + 9.0),
+        pos2(x, rect.center().y + 10.0),
         Align2::LEFT_CENTER,
-        "Playlist",
-        FontId::proportional(12.0),
+        line,
+        FontId::proportional(13.0),
         sub,
     );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
@@ -859,7 +887,7 @@ impl App {
 
         // ---- top bar (back / forward) -------------------------------------
         egui::TopBottomPanel::top("topbar")
-            .exact_height(46.0)
+            .exact_height(54.0)
             .frame(egui::Frame::none().fill(bg).inner_margin(egui::Margin::symmetric(12.0, 7.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
@@ -874,13 +902,39 @@ impl App {
                         actions.push(Action::SpBack);
                     }
                     ui.add_enabled(false, btn(">"));
+                    if self.sp.is_some() {
+                        let w = (ui.available_width() - 24.0).clamp(160.0, 440.0);
+                        ui.add_space(((ui.available_width() - w) / 2.0 - 40.0).max(8.0));
+                        let qid = egui::Id::new("top_search");
+                        let mut q: String = ui.data(|d| d.get_temp::<String>(qid)).unwrap_or_default();
+                        let r = ui
+                            .allocate_ui(vec2(w, 38.0), |ui| {
+                                search_bar(
+                                    ui,
+                                    &mut q,
+                                    "What do you want to play?",
+                                    accent,
+                                    text,
+                                    sub,
+                                    mix(bg, text, 0.10),
+                                )
+                            })
+                            .inner;
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !q.trim().is_empty() {
+                            actions.push(Action::SpLink(q.trim().to_string()));
+                        }
+                        ui.data_mut(|d| {
+                            d.insert_temp(qid, q);
+                            d.insert_temp(egui::Id::new("top_search_focus"), r.has_focus());
+                        });
+                    }
                 });
             });
 
         // ---- sidebar -----------------------------------------------------
         if show_side {
             egui::SidePanel::left("side")
-                .exact_width(196.0)
+                .exact_width((screen_w * 0.24).clamp(210.0, 300.0))
                 .resizable(false)
                 .show(ctx, |ui| {
                     // Tall window: footer pinned to the bottom. Short window: everything scrolls.
@@ -908,8 +962,24 @@ impl App {
                     }
 
                     ui.add_space(14.0);
-                    ui.label(egui::RichText::new("Your Library").size(15.0).strong().color(text));
-                    ui.add_space(4.0);
+                    let has_sp = self.sp.is_some();
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Your Library").size(16.0).strong().color(text));
+                        if has_sp {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let create = egui::Button::new(
+                                    egui::RichText::new("+ Create").size(13.0).strong().color(text),
+                                )
+                                .fill(mix(bg, text, 0.12))
+                                .rounding(16.0)
+                                .min_size(vec2(0.0, 30.0));
+                                if ui.add(create).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                    actions.push(Action::SpDialog(Dialog::NewPlaylist));
+                                }
+                            });
+                        }
+                    });
+                    ui.add_space(6.0);
                     if self.sp.is_some() {
                         let root = self.sp_nav.first().map(|p| p.node.clone());
                         let in_sp = self.view == View::Spotify;
@@ -919,9 +989,7 @@ impl App {
                         if nav_button(ui, "Search", in_sp && top_is_search, accent).clicked() {
                             actions.push(Action::SpRoot(Node::SpSearch(String::new())));
                         }
-                        if nav_button(ui, "Liked Songs", is_root(&Node::SpLiked), accent).clicked() {
-                            actions.push(Action::SpRoot(Node::SpLiked));
-                        }
+                        let liked_on = is_root(&Node::SpLiked);
                         ui.add_space(6.0);
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
@@ -935,48 +1003,120 @@ impl App {
                                 let on = is_root(&node);
                                 let chip = egui::Button::new(
                                     egui::RichText::new(label)
-                                        .size(12.5)
+                                        .size(13.0)
                                         .color(if on { bg } else { text }),
                                 )
                                 .fill(if on { text } else { mix(bg, text, 0.12) })
-                                .rounding(16.0);
+                                .rounding(16.0)
+                                .min_size(vec2(0.0, 30.0));
                                 if ui.add(chip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                     actions.push(Action::SpRoot(node));
                                 }
                             }
                         });
-                        ui.add_space(4.0);
-                        if nav_button(ui, "+ New playlist", false, accent).clicked() {
-                            actions.push(Action::SpDialog(Dialog::NewPlaylist));
-                        }
-                        // Playlist rows with covers (from the cached playlist list, no extra memory).
+                        ui.add_space(8.0);
+                        // Search inside the library, and Spotify's "Recents" sort switch.
+                        let qid = egui::Id::new("lib_query");
+                        let sid = egui::Id::new("lib_alpha");
+                        let mut query: String = ui.data(|d| d.get_temp::<String>(qid)).unwrap_or_default();
+                        let mut alpha: bool = ui.data(|d| d.get_temp::<bool>(sid)).unwrap_or(false);
+                        let lib_search = search_bar(
+                            ui,
+                            &mut query,
+                            "Search in Your Library",
+                            accent,
+                            text,
+                            sub,
+                            mix(bg, text, 0.08),
+                        );
+                        ctx.data_mut(|d| d.insert_temp(egui::Id::new("lib_search_focus"), lib_search.has_focus()));
+                        ui.horizontal(|ui| {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let label = if alpha { "Alphabetical" } else { "Recents" };
+                                let r = ui
+                                    .add(
+                                        egui::Label::new(egui::RichText::new(label).size(13.0).color(sub))
+                                            .sense(Sense::click()),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                                if r.clicked() {
+                                    alpha = !alpha;
+                                }
+                            });
+                        });
+                        ui.data_mut(|d| {
+                            d.insert_temp(qid, query.clone());
+                            d.insert_temp(sid, alpha);
+                        });
+
+                        // Rows: the pinned Liked Songs first (`None`), then the cached playlists.
                         let open_pl = if in_sp { self.sp_nav.last().map(|p| p.node.clone()) } else { None };
-                        if let Some((_, items, _)) = self.page_cache.get("SpPlaylists") {
-                            let n = items.len().min(60);
-                            let h = if tall { (ui.available_height() - 230.0).clamp(0.0, 520.0) } else { 260.0 };
-                            if n > 0 && h >= 60.0 {
-                                ui.add_space(6.0);
-                                ui.scope(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    egui::ScrollArea::vertical()
-                                        .id_source("side_playlists")
-                                        .max_height(h)
-                                        .auto_shrink([false, true])
-                                        .show_rows(ui, SIDE_ROW_H, n, |ui, range| {
-                                            for it in &items[range] {
-                                                let Kind::Open(node) = &it.kind else { continue };
-                                                let on = open_pl.as_ref() == Some(node);
-                                                let tex = it
-                                                    .art
-                                                    .clone()
-                                                    .and_then(|u| self.art.get(ui.ctx(), &ArtKey::Url(u), art::THUMB));
-                                                if side_playlist_row(ui, tex, &it.label, on, text, sub) {
-                                                    actions.push(Action::SpRoot(node.clone()));
+                        let me = self.sp_user.clone();
+                        let items: &[Item] = self.page_cache.get("SpPlaylists").map(|c| c.1.as_slice()).unwrap_or(&[]);
+                        let q = query.trim().to_lowercase();
+                        let mut rows: Vec<Option<usize>> = items
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, it)| {
+                                matches!(it.kind, Kind::Open(_)) && (q.is_empty() || it.label.to_lowercase().contains(&q))
+                            })
+                            .map(|(i, _)| Some(i))
+                            .take(300)
+                            .collect();
+                        if alpha {
+                            rows.sort_by_key(|r| r.map(|i| items[i].label.to_lowercase()));
+                        }
+                        if q.is_empty() || "liked songs".contains(&q) {
+                            rows.insert(0, None);
+                        }
+                        let n = rows.len();
+                        let h = if tall { (ui.available_height() - 280.0).clamp(0.0, 560.0) } else { 280.0 };
+                        if n > 0 && h >= 60.0 {
+                            ui.add_space(6.0);
+                            ui.scope(|ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                egui::ScrollArea::vertical()
+                                    .id_source("side_playlists")
+                                    .max_height(h)
+                                    .auto_shrink([false, true])
+                                    .show_rows(ui, SIDE_ROW_H, n, |ui, range| {
+                                        for r in &rows[range] {
+                                            match r {
+                                                None => {
+                                                    let line = if me.is_empty() {
+                                                        "Playlist".to_string()
+                                                    } else {
+                                                        format!("Playlist • {me}")
+                                                    };
+                                                    if side_playlist_row(
+                                                        ui, None, "Liked Songs", &line, true, liked_on, accent, text, sub,
+                                                    ) {
+                                                        actions.push(Action::SpRoot(Node::SpLiked));
+                                                    }
+                                                }
+                                                Some(i) => {
+                                                    let it = &items[*i];
+                                                    let Kind::Open(node) = &it.kind else { continue };
+                                                    let on = open_pl.as_ref() == Some(node);
+                                                    let tex = it
+                                                        .art
+                                                        .clone()
+                                                        .and_then(|u| self.art.get(ui.ctx(), &ArtKey::Url(u), art::THUMB));
+                                                    let line = if it.sub.is_empty() {
+                                                        "Playlist".to_string()
+                                                    } else {
+                                                        format!("Playlist • {}", it.sub)
+                                                    };
+                                                    if side_playlist_row(
+                                                        ui, tex, &it.label, &line, false, on, accent, text, sub,
+                                                    ) {
+                                                        actions.push(Action::SpRoot(node.clone()));
+                                                    }
                                                 }
                                             }
-                                        });
-                                });
-                            }
+                                        }
+                                    });
+                            });
                         }
                     } else if nav_button(ui, "Connect Spotify", false, accent).clicked() {
                         actions.push(Action::SpotifyWindow);
@@ -1296,6 +1436,13 @@ impl App {
 
         if dismiss_error {
             self.error = None;
+        }
+        let typing = ctx.data(|d| {
+            d.get_temp::<bool>(egui::Id::new("lib_search_focus")).unwrap_or(false)
+                || d.get_temp::<bool>(egui::Id::new("top_search_focus")).unwrap_or(false)
+        });
+        if typing {
+            self.search_focus = true;
         }
     }
 
