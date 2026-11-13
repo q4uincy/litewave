@@ -13,6 +13,7 @@ mod single;
 mod spotify;
 mod store;
 mod theme;
+mod tray;
 mod update;
 mod ytdlp;
 
