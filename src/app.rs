@@ -284,6 +284,8 @@ impl App {
         let cfg = Config::load();
         cc.egui_ctx.set_zoom_factor(cfg.ui_scale.clamp(0.8, 1.5));
         spotify::set_playback_options(cfg.spotify_quality, cfg.spotify_normalise, cfg.spotify_gapless);
+        crate::eq::set_all(&cfg.eq_gains);
+        crate::eq::set_enabled(cfg.eq_enabled);
         let (player, error) = match Playback::new(cfg.volume) {
             Ok(p) => (Some(p), None),
             Err(e) => (
