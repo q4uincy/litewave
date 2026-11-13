@@ -63,11 +63,11 @@ impl Player {
             sink.pause();
         }
         if start.is_zero() {
-            sink.append(decoder);
+            sink.append(crate::audio_tap::tap(decoder));
         } else {
             // Jump straight to the position. skip_duration would decode everything before it,
             // which makes seeking (and resuming) late in a song slow.
-            sink.append(decoder);
+            sink.append(crate::audio_tap::tap(decoder));
             if sink.try_seek(start).is_err() {
                 // The format cannot seek: reopen and skip the slow way.
                 sink.stop();
@@ -79,7 +79,7 @@ impl Player {
                 if !autoplay {
                     sink2.pause();
                 }
-                sink2.append(again.skip_duration(start));
+                sink2.append(crate::audio_tap::tap(again.skip_duration(start)));
                 self.sink = Some(sink2);
                 if autoplay {
                     self.started = Some(Instant::now());
