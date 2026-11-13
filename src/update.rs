@@ -4,6 +4,10 @@
 //! build and has a `litewave-setup.exe`, a small "Update now" box appears. Clicking it downloads
 //! the installer, starts it silently and closes litewave; the installer replaces the files and
 //! starts litewave again.
+//!
+//! "What's new": the update box shows the release notes before updating, and the first start after
+//! an update opens a "What's new" window with the notes of the version that is now running.
+//! Settings > Updates has a button to read them again.
 
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,12 +21,19 @@ const REPO: &str = "q4uincy/litewave";
 const ASSET: &str = "litewave-setup.exe";
 
 static CHECK_REQUEST: AtomicBool = AtomicBool::new(false);
+static WHATS_NEW_REQUEST: AtomicBool = AtomicBool::new(false);
 static STATUS: Mutex<String> = Mutex::new(String::new());
 
 /// Settings > Updates: ask for a check now (handled by `Root` on the next frame).
 pub fn request_check() {
     set_status("Checking for updates...");
     CHECK_REQUEST.store(true, Ordering::SeqCst);
+}
+
+/// Settings > Updates: show the release notes of the version that is running now.
+pub fn request_whats_new() {
+    set_status("Loading release notes...");
+    WHATS_NEW_REQUEST.store(true, Ordering::SeqCst);
 }
 
 /// The text shown under the "Check for updates" button.
@@ -43,6 +54,8 @@ enum Msg {
     Manual(Result<Option<Found>, String>),
     Available { version: String, url: String, notes: String },
     Downloaded(Result<(), String>),
+    /// Release notes of the running version. `manual` = asked for in Settings.
+    WhatsNew { manual: bool, result: Result<(String, String), String> },
 }
 
 enum State {
@@ -59,6 +72,8 @@ pub struct Root {
     state: State,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
+    /// (version, notes) of the "What's new" window, if open.
+    whats_new: Option<(String, String)>,
 }
 
 impl Root {
@@ -79,7 +94,26 @@ impl Root {
                 }
             });
         }
-        Self { app: crate::app::App::new(cc), state, tx, rx }
+        // First start after an update: show what changed in this version (once).
+        let current = env!("CARGO_PKG_VERSION");
+        let last = state_file("seen_version.txt")
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .unwrap_or_default();
+        let last = last.trim();
+        if last.is_empty() {
+            write_state("seen_version.txt", current); // fresh install: nothing to compare with
+        } else if is_newer(current, last) && crate::config::Config::load().auto_update_check {
+            let tx = tx.clone();
+            let ctx = cc.egui_ctx.clone();
+            std::thread::spawn(move || {
+                let result = fetch_notes(current);
+                let _ = tx.send(Msg::WhatsNew { manual: false, result });
+                ctx.request_repaint();
+            });
+        } else if is_newer(last, current) {
+            write_state("seen_version.txt", current); // downgraded: keep in step
+        }
+        Self { app: crate::app::App::new(cc), state, tx, rx, whats_new: None }
     }
 
     fn show_update_box(&mut self, ctx: &egui::Context) {
@@ -91,8 +125,36 @@ impl Root {
                 ctx.request_repaint();
             });
         }
+        if WHATS_NEW_REQUEST.swap(false, Ordering::SeqCst) {
+            let tx = self.tx.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let result = fetch_notes(env!("CARGO_PKG_VERSION"));
+                let _ = tx.send(Msg::WhatsNew { manual: true, result });
+                ctx.request_repaint();
+            });
+        }
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
+                Msg::WhatsNew { manual, result } => match result {
+                    Ok((version, notes)) => {
+                        write_state("seen_version.txt", env!("CARGO_PKG_VERSION"));
+                        if manual {
+                            set_status("");
+                        }
+                        if !notes.trim().is_empty() {
+                            self.whats_new = Some((version, notes));
+                        } else if manual {
+                            set_status("This release has no notes.");
+                        }
+                    }
+                    // Offline etc.: stay silent on start (we try again next time), tell the user otherwise.
+                    Err(e) => {
+                        if manual {
+                            set_status(&e);
+                        }
+                    }
+                },
                 Msg::Available { version, url, notes } => {
                     if matches!(self.state, State::Idle) {
                         self.state = State::Available { version, url, notes };
@@ -106,10 +168,14 @@ impl Root {
                 }
                 Msg::Manual(Ok(None)) => set_status("You're up to date."),
                 Msg::Manual(Err(e)) => set_status(&e),
-                Msg::Downloaded(Ok(())) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                Msg::Downloaded(Ok(())) => {
+                    crate::tray::QUITTING.store(true, Ordering::SeqCst);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
                 Msg::Downloaded(Err(e)) => self.state = State::Failed(e),
             }
         }
+        self.show_whats_new(ctx);
         if matches!(self.state, State::Idle | State::Dismissed) {
             return;
         }
@@ -129,7 +195,9 @@ impl Root {
                             ui.label(format!("litewave {version} is available"));
                             if !notes.trim().is_empty() {
                                 ui.collapsing("What's new", |ui| {
-                                    ui.label(notes.as_str());
+                                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                                        show_notes(ui, notes);
+                                    });
                                 });
                             }
                             ui.horizontal(|ui| {
@@ -182,6 +250,34 @@ impl Root {
     }
 }
 
+impl Root {
+    /// The "What's new in this version" window.
+    fn show_whats_new(&mut self, ctx: &egui::Context) {
+        let Some((version, notes)) = &self.whats_new else { return };
+        let mut close = false;
+        egui::Window::new(format!("What's new in litewave {version}"))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(380.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+                    show_notes(ui, notes);
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Got it").clicked() {
+                        close = true;
+                    }
+                    ui.hyperlink_to("All releases", format!("https://github.com/{REPO}/releases"));
+                });
+            });
+        if close {
+            self.whats_new = None;
+        }
+    }
+}
+
 impl eframe::App for Root {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Files opened with litewave (Open with, command line) or dropped onto the window.
@@ -195,6 +291,59 @@ impl eframe::App for Root {
         self.app.update(ctx, frame);
         self.show_update_box(ctx);
     }
+}
+
+/// Turns a GitHub release body into plain, readable lines: bullets instead of `*`, no
+/// "by @user in <link>" tails, no bold markers, no "Full Changelog" link line.
+fn clean_notes(body: &str) -> String {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let t = line.trim();
+        if t.starts_with("**Full Changelog**") || t.starts_with("Full Changelog") {
+            continue;
+        }
+        let mut t = t.replace("**", "").replace('`', "");
+        if let Some(rest) = t.strip_prefix("* ").or_else(|| t.strip_prefix("- ")) {
+            let mut item = rest.to_string();
+            if let Some(i) = item.find(" by @") {
+                item.truncate(i);
+            }
+            t = format!("\u{2022} {item}");
+        }
+        out.push(t);
+    }
+    let joined = out.join("\n");
+    joined.trim().chars().take(4000).collect()
+}
+
+/// Draws cleaned release notes: `#` lines are headings, everything else wraps as text.
+fn show_notes(ui: &mut egui::Ui, notes: &str) {
+    for line in notes.lines() {
+        if line.trim().is_empty() {
+            ui.add_space(4.0);
+        } else if let Some(h) = line.trim_start().strip_prefix('#') {
+            ui.label(egui::RichText::new(h.trim_start_matches('#').trim()).strong());
+        } else {
+            ui.label(line);
+        }
+    }
+}
+
+/// Release notes of one version (the tag `v<version>`): `(version, notes)`.
+fn fetch_notes(version: &str) -> Result<(String, String), String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(15))
+        .user_agent(concat!("litewave/", env!("CARGO_PKG_VERSION")))
+        .build();
+    let release: serde_json::Value = agent
+        .get(&format!("https://api.github.com/repos/{REPO}/releases/tags/v{version}"))
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| format!("Could not load the release notes: {e}"))?
+        .into_json()
+        .map_err(|e| e.to_string())?;
+    let notes = clean_notes(release["body"].as_str().unwrap_or(""));
+    Ok((version.to_string(), notes))
 }
 
 /// "v0.6.10" -> [0, 6, 10]
@@ -298,7 +447,7 @@ fn fetch(manual: bool) -> Result<Option<Found>, String> {
     if !manual && (skipped.trim() == version || snoozed(&version) || already_installed(&version)) {
         return Ok(None);
     }
-    let notes: String = release["body"].as_str().unwrap_or("").chars().take(700).collect();
+    let notes = clean_notes(release["body"].as_str().unwrap_or(""));
     let url = release["assets"]
         .as_array()
         .and_then(|a| a.iter().find(|a| a["name"].as_str() == Some(ASSET)))
@@ -352,5 +501,11 @@ mod tests {
         assert!(is_newer("v0.10.0", "0.9.9"));
         assert!(!is_newer("v0.6.0", "0.6.0"));
         assert!(!is_newer("v0.5.9", "0.6.0"));
+    }
+
+    #[test]
+    fn cleans_release_notes() {
+        let body = "## What's Changed\n* Add lyrics by @q4uincy in https://github.com/x/y/pull/1\n\n**Full Changelog**: https://github.com/x/y/compare/a...b";
+        assert_eq!(clean_notes(body), "## What's Changed\n\u{2022} Add lyrics");
     }
 }
