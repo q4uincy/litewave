@@ -121,6 +121,8 @@ pub type SpLogin = (spotify::Client, Result<spotify::Engine, String>, String, Op
 pub enum SpMsg {
     Page(Node, Result<(Vec<ipod::Item>, Vec<Track>), String>),
     Connected(Result<SpLogin, String>),
+    /// The account's display name.
+    UserName(String),
     /// Spotify ids of all Liked Songs.
     Liked(Vec<String>),
     /// An edit finished: a message to show and the page to reload (if any).
@@ -243,6 +245,8 @@ pub struct App {
     pub(crate) queue: Vec<Track>,
     /// The last few songs that were played, newest first (memory only, capped).
     pub(crate) recent: VecDeque<Track>,
+    /// The Spotify account's display name (Home shows "Made For <name>").
+    pub(crate) sp_user: String,
     /// Which tab of the queue panel is shown: false = Queue, true = Recent.
     pub(crate) queue_recent_tab: bool,
     /// When the sidebar last asked for the playlist list (so a failed load is not retried every frame).
@@ -366,6 +370,7 @@ impl App {
             store_rx,
             queue: Vec::new(),
             recent: VecDeque::new(),
+            sp_user: String::new(),
             queue_recent_tab: false,
             list_fetch: HashMap::new(),
             home_back: None,
@@ -658,8 +663,19 @@ impl App {
                     self.ipod_receive(node, res)
                 }
                 SpMsg::Liked(ids) => self.liked_ids = ids.into_iter().collect(),
+                SpMsg::UserName(n) => self.sp_user = n,
                 SpMsg::Connected(Ok((client, engine, refresh, browse_refresh))) => {
                     self.sp = Some(client);
+                    if let Some(c) = self.sp.clone() {
+                        let tx = self.sp_tx.clone();
+                        let ctx = self.ctx.clone();
+                        std::thread::spawn(move || {
+                            if let Ok(n) = c.user_name() {
+                                let _ = tx.send(SpMsg::UserName(n));
+                                ctx.request_repaint();
+                            }
+                        });
+                    }
                     if let Some(c) = self.sp.clone() {
                         let tx = self.sp_tx.clone();
                         let ctx = self.ctx.clone();
