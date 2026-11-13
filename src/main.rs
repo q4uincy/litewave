@@ -2,6 +2,7 @@
 
 mod app;
 mod art;
+mod audio_tap;
 mod config;
 mod library;
 mod lyrics;
