@@ -44,6 +44,10 @@ impl Client {
     pub fn playlist_tracks(&self, _id: &str) -> Result<Vec<Track>, String> {
         Err(OFF.to_string())
     }
+    pub fn user_name(&self) -> Result<String, String> {
+        Ok(String::new())
+    }
+
     pub fn liked(&self) -> Result<Vec<Track>, String> {
         Err(OFF.to_string())
     }
