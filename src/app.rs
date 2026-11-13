@@ -1,4 +1,5 @@
 mod classic;
+mod home;
 mod ipod;
 mod settings;
 mod themes;
@@ -94,12 +95,17 @@ pub enum Action {
     PlayRecent(usize),
     /// Plays a queued song now (it leaves the queue).
     QueuePlay(usize),
+    /// Shows the Home screen.
+    Home,
+    /// Opens a playlist / album / artist / Liked Songs from the Home screen (Back returns to Home).
+    HomeOpen(Node),
     /// The "..." button of a song row: the song and where to open its menu.
     RowMenu(Track, egui::Pos2),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    Home,
     Library,
     Spotify,
     YouTube,
@@ -240,7 +246,9 @@ pub struct App {
     /// Which tab of the queue panel is shown: false = Queue, true = Recent.
     pub(crate) queue_recent_tab: bool,
     /// When the sidebar last asked for the playlist list (so a failed load is not retried every frame).
-    pub(crate) side_fetch: Option<Instant>,
+    pub(crate) list_fetch: HashMap<String, Instant>,
+    /// Set when a page was opened from Home: that page's node, so Back can return to Home.
+    pub(crate) home_back: Option<Node>,
     /// The list position to continue from after queued songs.
     queue_resume: Option<usize>,
     pub(crate) row_menu: Option<(Track, egui::Pos2, Instant)>,
@@ -359,7 +367,8 @@ impl App {
             queue: Vec::new(),
             recent: VecDeque::new(),
             queue_recent_tab: false,
-            side_fetch: None,
+            list_fetch: HashMap::new(),
+            home_back: None,
             queue_resume: None,
             row_menu: None,
             sp_typed: Instant::now(),
@@ -691,9 +700,11 @@ impl App {
                     self.load_editable();
                     if self.sp_interactive {
                         self.sp_interactive = false;
-                        self.view = View::Spotify;
                         self.sp_nav.clear();
-                        self.sp_push(Node::Spotify);
+                        self.view = View::Home;
+                    } else if self.view == View::Library {
+                        // Connected (also after an automatic reconnect at startup): Home is the default.
+                        self.view = View::Home;
                     }
                 }
                 SpMsg::Editable(Ok(list)) => self.sp_editable = list,
@@ -772,6 +783,32 @@ impl App {
         }
     }
 
+    /// Asks for a library list (playlists, albums, artists) unless a fresh copy is cached or a request
+    /// was sent a moment ago (so a failed load is not retried every frame).
+    pub(crate) fn want_list(&mut self, node: Node) {
+        let key = format!("{node:?}");
+        let fresh = self
+            .page_cache
+            .get(&key)
+            .map_or(false, |(at, _, _)| at.elapsed() < Duration::from_secs(600));
+        let recent = self
+            .list_fetch
+            .get(&key)
+            .map_or(false, |t| t.elapsed() < Duration::from_secs(30));
+        if fresh || recent {
+            return;
+        }
+        self.list_fetch.insert(key, Instant::now());
+        self.spawn_fetch(node);
+    }
+
+    /// True when Back has somewhere to go: an earlier Spotify page, or Home (for a page opened from it).
+    pub(crate) fn sp_can_back(&self) -> bool {
+        self.view == View::Spotify
+            && (self.sp_nav.len() > 1
+                || (self.sp_nav.len() == 1 && self.home_back.as_ref() == self.sp_nav.first().map(|p| &p.node)))
+    }
+
     fn playlist_name(&self, pid: &str) -> String {
         self.sp_editable
             .iter()
@@ -795,7 +832,7 @@ impl App {
 
     /// Library lists are cached for a while; saving or removing something makes them stale.
     fn forget_library_pages(&mut self) {
-        self.side_fetch = None;
+        self.list_fetch.clear();
         for n in [Node::SpLiked, Node::SpPlaylists, Node::SpAlbums, Node::SpArtists, Node::SpShows] {
             self.page_cache.remove(&format!("{n:?}"));
         }
@@ -864,6 +901,8 @@ impl App {
         self.ipod.stack.truncate(1);
         self.sp_nav.clear();
         self.page_cache.clear();
+        self.list_fetch.clear();
+        self.home_back = None;
         self.view = View::Library;
     }
 
@@ -2121,7 +2160,16 @@ impl App {
             Action::SpBack => {
                 if self.sp_nav.len() > 1 {
                     self.sp_nav.pop();
+                } else if self.sp_can_back() {
+                    self.view = View::Home;
                 }
+            }
+            Action::Home => self.view = View::Home,
+            Action::HomeOpen(n) => {
+                self.home_back = Some(n.clone());
+                self.view = View::Spotify;
+                self.sp_nav.clear();
+                self.sp_push(n);
             }
             Action::SpPlay(i) => {
                 let list = self.sp_nav.last().map(|p| p.tracks.clone()).unwrap_or_default();
