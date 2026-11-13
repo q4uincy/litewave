@@ -853,6 +853,7 @@ struct LowLatencySink {
     sink: rodio::Sink,
     _stream: rodio::OutputStream,
     volume: Box<dyn librespot::playback::mixer::VolumeGetter + Send>,
+    eq: crate::eq::Eq,
 }
 
 impl librespot::playback::audio_backend::Sink for LowLatencySink {
@@ -876,7 +877,13 @@ impl librespot::playback::audio_backend::Sink for LowLatencySink {
             .samples()
             .map_err(|e| librespot::playback::audio_backend::SinkError::OnWrite(format!("{e:?}")))?;
         let gain = self.volume.attenuation_factor();
-        let out: Vec<f32> = samples.iter().map(|&x| (x * gain) as f32).collect();
+        let mut out: Vec<f32> = samples.iter().map(|&x| (x * gain) as f32).collect();
+        self.eq.refresh(44100, 2);
+        if self.eq.is_active() {
+            for (i, v) in out.iter_mut().enumerate() {
+                *v = self.eq.sample(*v, i & 1).clamp(-1.0, 1.0);
+            }
+        }
         crate::audio_tap::push_interleaved(&out, 2, 44100);
         self.sink
             .append(rodio::buffer::SamplesBuffer::new(2, 44100, out));
@@ -948,6 +955,7 @@ impl Engine {
                                 sink,
                                 _stream: stream,
                                 volume: sink_volume,
+                                eq: crate::eq::Eq::new(),
                             }),
                             Err(_) => backend(None, format),
                         },
