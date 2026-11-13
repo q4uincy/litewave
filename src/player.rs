@@ -197,14 +197,20 @@ impl Playback {
     }
 
     pub fn set_spotify(&mut self, engine: spotify::Engine) {
-        self.sp = Some(engine);
+        // Dropping an Engine shuts its tokio runtime down, which can block for a while:
+        // never do that on the UI thread (it shows up as "Not Responding").
+        if let Some(old) = self.sp.replace(engine) {
+            std::thread::spawn(move || drop(old));
+        }
     }
 
     pub fn drop_spotify(&mut self) {
         if self.active == Active::Spotify {
             self.stop();
         }
-        self.sp = None;
+        if let Some(old) = self.sp.take() {
+            std::thread::spawn(move || drop(old));
+        }
     }
 
     /// True while a Spotify track has been requested but audio has not started yet.
