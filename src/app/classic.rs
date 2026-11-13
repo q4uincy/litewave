@@ -285,7 +285,7 @@ fn list_controls(
     }
 }
 
-const SIDE_ROW_H: f32 = 44.0;
+const SIDE_ROW_H: f32 = 54.0;
 
 /// Sidebar playlist row: small cover and the name. Returns true when clicked.
 fn side_playlist_row(ui: &mut egui::Ui, tex: Option<TextureId>, name: &str, on: bool, text: Color32, sub: Color32) -> bool {
@@ -295,15 +295,22 @@ fn side_playlist_row(ui: &mut egui::Ui, tex: Option<TextureId>, name: &str, on: 
     }
     let cy = rect.center().y;
     let p = ui.painter();
-    paint_cover(p, Rect::from_center_size(pos2(rect.min.x + 26.0, cy), vec2(34.0, 34.0)), tex, name);
-    p.with_clip_rect(Rect::from_min_max(pos2(rect.min.x + 50.0, rect.min.y), pos2(rect.max.x - 6.0, rect.max.y)))
-        .text(
-            pos2(rect.min.x + 50.0, cy),
-            Align2::LEFT_CENTER,
-            name,
-            FontId::proportional(14.0),
-            if on { text } else { sub.gamma_multiply(1.25) },
-        );
+    paint_cover(p, Rect::from_center_size(pos2(rect.min.x + 30.0, cy), vec2(42.0, 42.0)), tex, name);
+    let clip = p.with_clip_rect(Rect::from_min_max(pos2(rect.min.x + 58.0, rect.min.y), pos2(rect.max.x - 6.0, rect.max.y)));
+    clip.text(
+        pos2(rect.min.x + 58.0, cy - 8.0),
+        Align2::LEFT_CENTER,
+        name,
+        FontId::proportional(14.0),
+        if on { text } else { text.gamma_multiply(0.92) },
+    );
+    clip.text(
+        pos2(rect.min.x + 58.0, cy + 9.0),
+        Align2::LEFT_CENTER,
+        "Playlist",
+        FontId::proportional(12.0),
+        sub,
+    );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
@@ -644,6 +651,12 @@ impl App {
                     pos2(full.max.x - side_w - gap, full.max.y),
                 );
 
+                // Spectrum bars behind everything else in the bar.
+                if self.cfg.show_viz {
+                    let strip = Rect::from_min_max(pos2(full.min.x, full.max.y - 44.0), full.max);
+                    crate::viz::paint(ui.painter(), strip, accent);
+                }
+
                 // Now playing (left).
                 if !narrow && !title.is_empty() {
                     let cy = full.center().y;
@@ -887,9 +900,6 @@ impl App {
                     if self.sp.is_some() && nav_button(ui, "Home", self.view == View::Home, accent).clicked() {
                         actions.push(Action::Home);
                     }
-                    if nav_button(ui, "Your Library", self.view == View::Library, accent).clicked() {
-                        actions.push(Action::Library);
-                    }
                     if nav_button(ui, "iPod mode", false, accent).clicked() {
                         actions.push(Action::SetIpod(true));
                     }
@@ -943,7 +953,7 @@ impl App {
                         let open_pl = if in_sp { self.sp_nav.last().map(|p| p.node.clone()) } else { None };
                         if let Some((_, items, _)) = self.page_cache.get("SpPlaylists") {
                             let n = items.len().min(60);
-                            let h = if tall { (ui.available_height() - 230.0).clamp(0.0, 360.0) } else { 220.0 };
+                            let h = if tall { (ui.available_height() - 230.0).clamp(0.0, 520.0) } else { 260.0 };
                             if n > 0 && h >= 60.0 {
                                 ui.add_space(6.0);
                                 ui.scope(|ui| {
@@ -975,6 +985,9 @@ impl App {
                     ui.add_space(14.0);
                     ui.label(egui::RichText::new("On this PC").size(15.0).strong().color(text));
                     ui.add_space(4.0);
+                    if nav_button(ui, "Local music", self.view == View::Library, accent).clicked() {
+                        actions.push(Action::Library);
+                    }
                     let qlabel = if self.queue.is_empty() {
                         "Queue".to_string()
                     } else {
