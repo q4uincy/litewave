@@ -72,6 +72,11 @@ pub struct Config {
     pub spotify_gapless: bool,
     /// Windows: the window's close button hides litewave to the tray icon instead of quitting.
     pub close_to_tray: bool,
+    /// Equalizer on/off and the gain in dB of its 10 bands (31 Hz to 16 kHz).
+    pub eq_enabled: bool,
+    pub eq_gains: [f32; 10],
+    /// Spectrum bars drawn behind the player bar while music plays.
+    pub show_viz: bool,
 }
 
 impl Default for Config {
@@ -105,6 +110,9 @@ impl Default for Config {
             spotify_normalise: true,
             spotify_gapless: true,
             close_to_tray: false,
+            eq_enabled: false,
+            eq_gains: [0.0; 10],
+            show_viz: true,
         }
     }
 }
