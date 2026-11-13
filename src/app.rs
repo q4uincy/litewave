@@ -236,6 +236,9 @@ pub struct App {
     /// The last YouTube search results, kept so the YouTube tab can show them again.
     yt_list: Vec<Track>,
     media: Option<crate::mediakeys::MediaKeys>,
+    tray: Option<crate::tray::Tray>,
+    /// The window is hidden in the tray.
+    tray_hidden: bool,
     pub(crate) store_items: Vec<StoreItem>,
     pub(crate) store_busy: bool,
     pub(crate) store_note: String,
@@ -363,6 +366,8 @@ impl App {
             yt_query: String::new(),
             yt_list: Vec::new(),
             media: crate::mediakeys::MediaKeys::new(cc),
+            tray: crate::tray::Tray::new(cc),
+            tray_hidden: false,
             store_items: Vec::new(),
             store_busy: false,
             store_note: String::new(),
@@ -2397,6 +2402,46 @@ impl eframe::App for App {
                 .as_ref()
                 .map(|t| (t.title.as_str(), t.artist.as_str(), t.album.as_str(), t.duration));
             m.update(now, playing_now);
+        }
+
+        // Tray icon: its menu, left click, hover text, and "close button hides to tray".
+        if let Some(t) = self.tray.as_mut() {
+            use crate::tray::Cmd;
+            for c in t.poll() {
+                match c {
+                    Cmd::PlayPause => actions.push(Action::Toggle),
+                    Cmd::Next => actions.push(Action::Next),
+                    Cmd::Prev => actions.push(Action::Prev),
+                    Cmd::Show | Cmd::ShowHide => {
+                        let hide = c == Cmd::ShowHide && !self.tray_hidden;
+                        self.tray_hidden = hide;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!hide));
+                        if !hide {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        }
+                    }
+                    Cmd::Quit => {
+                        crate::tray::QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+            let tip = match self.now.as_ref() {
+                Some(n) if !n.artist.is_empty() => format!("{} - {}", n.artist, n.title),
+                Some(n) => n.title.clone(),
+                None => "litewave".to_string(),
+            };
+            t.set_tooltip(&tip);
+            let quitting = crate::tray::QUITTING.load(std::sync::atomic::Ordering::SeqCst);
+            if self.cfg.close_to_tray
+                && !quitting
+                && ctx.input(|i| i.viewport().close_requested())
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.tray_hidden = true;
+            }
         }
 
         for a in actions {
