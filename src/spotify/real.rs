@@ -541,7 +541,7 @@ impl Client {
                 Some(Entry {
                     id: p["id"].as_str()?.to_string(),
                     name: p["name"].as_str().unwrap_or("Untitled").to_string(),
-                    sub: String::new(),
+                    sub: p["owner"]["display_name"].as_str().unwrap_or("").to_string(),
                     art: pick_image(&p["images"]),
                 })
             })
