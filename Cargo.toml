@@ -57,6 +57,11 @@ log = { version = "0.4", optional = true }
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 
+# System tray icon (Windows only, so Linux builds need no extra system libraries).
+[target.'cfg(windows)'.dependencies.tray-icon]
+version = "0.19"
+default-features = false
+
 # Embeds assets/icon.ico into litewave.exe so the file itself shows the logo in Explorer.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
