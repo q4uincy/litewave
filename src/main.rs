@@ -4,6 +4,7 @@ mod app;
 mod art;
 mod audio_tap;
 mod config;
+mod eq;
 mod library;
 mod lyrics;
 mod mediakeys;
@@ -15,6 +16,7 @@ mod store;
 mod theme;
 mod tray;
 mod update;
+mod viz;
 mod ytdlp;
 
 /// The release build has no console, so a crash would be silent. Write it to a file and show it.
