@@ -14,7 +14,6 @@ use crate::lyrics::{self, Status as LyricsStatus};
 use crate::spotify;
 use crate::theme::mix;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, TextureId};
-use std::time::{Duration, Instant};
 
 const ROW_H: f32 = 52.0;
 
@@ -589,8 +588,7 @@ impl App {
         let track_col = mix(self.cfg.theme.panel(), text, 0.25);
 
         // Esc / Backspace / Alt+Left go back one Spotify page (not while typing or in a dialog).
-        if self.view == View::Spotify
-            && self.sp_nav.len() > 1
+        if self.sp_can_back()
             && self.dialog.is_none()
             && !ctx.wants_keyboard_input()
         {
@@ -622,17 +620,9 @@ impl App {
         let lyrics_side = self.cfg.lyrics_panel && screen_w >= 760.0;
         let queue_side = self.cfg.queue_panel && screen_w >= 760.0;
 
-        // Ask for the playlist list once (and again when it is old or was dropped), for the sidebar rows.
-        if show_side
-            && self.sp.is_some()
-            && self.side_fetch.map_or(true, |t| t.elapsed() > Duration::from_secs(10))
-            && self
-                .page_cache
-                .get("SpPlaylists")
-                .map_or(true, |(at, _, _)| at.elapsed() > Duration::from_secs(600))
-        {
-            self.side_fetch = Some(Instant::now());
-            self.spawn_fetch(Node::SpPlaylists);
+        // Ask for the playlist list (sidebar rows); throttled and cached.
+        if show_side && self.sp.is_some() {
+            self.want_list(Node::SpPlaylists);
         }
         let current_sp_id = self.now.as_ref().and_then(|t| t.spotify_id.clone());
         let mode = self.cfg.shuffle_mode();
@@ -661,12 +651,7 @@ impl App {
                     let cover = Rect::from_center_size(pos2(full.min.x + 28.0, cy), vec2(56.0, 56.0));
                     paint_cover(p, cover, bar_art, &title);
                     let tx = cover.max.x + 12.0;
-                    // Leave room on the right for the heart so it never sits on top of the title.
-                    let heart_room = if current_sp_id.is_some() { 30.0 } else { 0.0 };
-                    let clip = Rect::from_min_max(
-                        pos2(tx, full.min.y),
-                        pos2((full.min.x + side_w - heart_room).max(tx + 10.0), full.max.y),
-                    );
+                    let clip = Rect::from_min_max(pos2(tx, full.min.y), pos2(full.min.x + side_w, full.max.y));
                     let pc = p.with_clip_rect(clip);
                     pc.text(
                         pos2(tx, cy - 10.0),
@@ -685,23 +670,10 @@ impl App {
                         FontId::proportional(12.0),
                         sub,
                     );
-                    // Click the cover or title to go back to where the song is playing from.
-                    let hit = Rect::from_min_max(cover.min, pos2((full.min.x + side_w - heart_room).max(tx), cover.max.y));
-                    let r = ui
-                        .interact(hit, ui.id().with("now_playing"), Sense::click())
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(match &from_name {
-                            Some(n) => format!("Go to {n}"),
-                            None => "Go to the song list".to_string(),
-                        });
-                    if r.clicked() {
-                        actions.push(Action::GoToSource);
-                    }
-
                     // Heart: like / unlike the playing Spotify song.
                     if let Some(id) = &current_sp_id {
                         let liked = self.liked_ids.contains(id);
-                        let hc = pos2(full.min.x + side_w - 12.0, cy);
+                        let hc = pos2(full.min.x + side_w - 14.0, cy);
                         let hr = ui
                             .interact(Rect::from_center_size(hc, vec2(24.0, 24.0)), ui.id().with("heart"), Sense::click())
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -727,6 +699,18 @@ impl App {
                             let uri = vec![format!("spotify:track:{id}")];
                             actions.push(if liked { Action::SpUnsave(uri) } else { Action::SpSave(uri) });
                         }
+                    }
+                    // Click the cover or title to go back to where the song is playing from.
+                    let hit = Rect::from_min_max(cover.min, pos2(full.min.x + side_w, cover.max.y));
+                    let r = ui
+                        .interact(hit, ui.id().with("now_playing"), Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(match &from_name {
+                            Some(n) => format!("Go to {n}"),
+                            None => "Go to the song list".to_string(),
+                        });
+                    if r.clicked() {
+                        actions.push(Action::GoToSource);
                     }
                 }
 
@@ -867,7 +851,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
-                    let can_back = self.view == View::Spotify && self.sp_nav.len() > 1;
+                    let can_back = self.sp_can_back();
                     let btn = |t: &str| {
                         egui::Button::new(egui::RichText::new(t).size(16.0).strong())
                             .rounding(16.0)
@@ -900,6 +884,9 @@ impl App {
                         ui.label(egui::RichText::new("litewave").size(22.0).strong().color(accent));
                     });
                     ui.add_space(14.0);
+                    if self.sp.is_some() && nav_button(ui, "Home", self.view == View::Home, accent).clicked() {
+                        actions.push(Action::Home);
+                    }
                     if nav_button(ui, "Your Library", self.view == View::Library, accent).clicked() {
                         actions.push(Action::Library);
                     }
@@ -1121,6 +1108,11 @@ impl App {
                     self.themes_ui(&ctx2, ui);
                     self.theme_gallery_ui(&ctx2, ui);
                 });
+                return;
+            }
+
+            if self.view == View::Home && self.sp.is_some() {
+                self.home_view(ui, actions, accent, text, sub);
                 return;
             }
 
@@ -1429,7 +1421,7 @@ impl App {
         let is_search = matches!(page.node, Node::SpSearch(_));
 
         ui.horizontal(|ui| {
-            if self.sp_nav.len() > 1 && ui.button("Back").clicked() {
+            if self.sp_can_back() && ui.button("Back").clicked() {
                 actions.push(Action::SpBack);
             }
             ui.label(egui::RichText::new(&page.title).size(24.0).strong());
