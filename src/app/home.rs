@@ -1,4 +1,4 @@
-//! Home screen (classic layout): a time-of-day greeting, a grid of compact tiles built from
+//! Home screen (classic layout): filter chips, a grid of compact tiles built from
 //! Liked Songs / playlists / albums, and shelves of cover cards. Everything reads the lists that
 //! are already in `page_cache` (plus `App.recent`), covers are requested only for items that are
 //! on screen, and every list is capped, so the extra memory is a handful of small textures.
@@ -36,15 +36,6 @@ fn is_made_for_you(name: &str) -> bool {
         || n.starts_with("your summer rewind")
         || n.starts_with("new music friday")
         || n.starts_with("this is ")
-}
-
-fn greeting() -> &'static str {
-    use chrono::Timelike;
-    match chrono::Local::now().hour() {
-        5..=11 => "Good morning",
-        12..=17 => "Good afternoon",
-        _ => "Good evening",
-    }
 }
 
 /// Where a tile or card leads.
@@ -170,6 +161,38 @@ fn open_items(items: &[Item]) -> impl Iterator<Item = (&Item, &Node)> {
     })
 }
 
+/// An album from Liked Songs with how many liked songs it has.
+#[derive(Clone)]
+struct LikedAlbum {
+    id: String,
+    name: String,
+    artist: String,
+    art: Option<String>,
+}
+
+/// Albums sorted by how many of the liked songs are on them (most first, ties by name).
+/// Only the first `SHELF_MAX` are kept.
+fn top_liked_albums(tracks: &[crate::library::Track]) -> Vec<LikedAlbum> {
+    use std::collections::HashMap;
+    let mut by_album: HashMap<&str, (usize, &crate::library::Track)> = HashMap::new();
+    for t in tracks {
+        let Some(id) = t.album_id.as_deref() else { continue };
+        by_album.entry(id).and_modify(|e| e.0 += 1).or_insert((1, t));
+    }
+    let mut rows: Vec<(usize, &str, &crate::library::Track)> =
+        by_album.into_iter().map(|(id, (n, t))| (n, id, t)).collect();
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.album.cmp(&b.2.album)));
+    rows.into_iter()
+        .take(SHELF_MAX)
+        .map(|(_, id, t)| LikedAlbum {
+            id: id.to_string(),
+            name: t.album.clone(),
+            artist: t.artist.clone(),
+            art: t.art_url.clone(),
+        })
+        .collect()
+}
+
 impl App {
     fn cached_items(&self, key: &str) -> Vec<Item> {
         self.page_cache
@@ -187,7 +210,7 @@ impl App {
         text: Color32,
         sub: Color32,
     ) {
-        for n in [Node::SpPlaylists, Node::SpAlbums, Node::SpArtists, Node::SpShows] {
+        for n in [Node::SpPlaylists, Node::SpAlbums, Node::SpArtists, Node::SpShows, Node::SpLiked] {
             self.want_list(n);
         }
         let base = ui.visuals().panel_fill;
@@ -226,7 +249,11 @@ impl App {
                 .take(per_row)
                 .map(|(it, n)| Card {
                     title: it.label.clone(),
-                    sub: kind.to_string(),
+                    sub: match kind {
+                        "Album" if !it.sub.is_empty() => it.sub.clone(),
+                        "Playlist" if !it.sub.is_empty() => format!("Playlist \u{2022} {}", it.sub),
+                        _ => kind.to_string(),
+                    },
                     art: it.art.clone().map(ArtKey::Url),
                     circle,
                     go: Click::Open(n.clone()),
@@ -246,6 +273,35 @@ impl App {
                 go: Click::Recent(k),
             })
             .collect();
+        // "Albums featuring songs you like": the albums that have the most songs in Liked Songs.
+        // Counted once per change of the Liked Songs list, not on every frame.
+        let liked_albums: Vec<Card> = {
+            let id = egui::Id::new("liked_albums");
+            let count = self.page_cache.get("SpLiked").map_or(0, |(_, _, t)| t.len());
+            let memo: Option<(usize, Vec<LikedAlbum>)> = ui.data(|d| d.get_temp(id));
+            let rows = match memo {
+                Some((n, rows)) if n == count => rows,
+                _ => {
+                    let rows = self
+                        .page_cache
+                        .get("SpLiked")
+                        .map(|(_, _, tracks)| top_liked_albums(tracks))
+                        .unwrap_or_default();
+                    ui.data_mut(|d| d.insert_temp(id, (count, rows.clone())));
+                    rows
+                }
+            };
+            rows.into_iter()
+                .take(per_row)
+                .map(|a| Card {
+                    title: a.name.clone(),
+                    sub: a.artist,
+                    art: a.art.map(ArtKey::Url),
+                    circle: false,
+                    go: Click::Open(Node::SpAlbum(a.id, a.name)),
+                })
+                .collect()
+        };
         let user = self.sp_user.clone();
         let mixes: Vec<Item> = playlists
             .iter()
@@ -261,6 +317,7 @@ impl App {
             ("Made for you", Some(Node::SpPlaylists), from_items(&made, "Made for you", false)),
             ("Your playlists", Some(Node::SpPlaylists), from_items(&playlists, "Playlist", false)),
             ("Your albums", Some(Node::SpAlbums), from_items(&albums, "Album", false)),
+            ("Albums featuring songs you like", None, liked_albums),
             ("Your top mixes", Some(Node::SpPlaylists), from_items(&mixes, "Made for you", false)),
             ("Your artists", Some(Node::SpArtists), from_items(&artists, "Artist", true)),
             ("Your podcasts", Some(Node::SpShows), from_items(&shows, "Podcast", false)),
@@ -272,9 +329,7 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(TILE_GAP, TILE_GAP);
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(greeting()).size(30.0).strong().color(text));
-                ui.add_space(2.0);
+                ui.add_space(8.0);
                 let fid = egui::Id::new("home_filter");
                 let mut filter: u8 = ui.data(|d| d.get_temp::<u8>(fid)).unwrap_or(0);
                 ui.horizontal(|ui| {
