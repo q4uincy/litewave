@@ -312,12 +312,10 @@ fn side_playlist_row(
     if liked {
         paint_hub_tile(ui.painter(), cover, HubIcon::Liked);
     } else if let Some(id) = tex {
-        ui.put(
-            cover,
-            egui::Image::new(egui::load::SizedTexture::new(id, cover.size()))
-                .fit_to_exact_size(cover.size())
-                .rounding(egui::Rounding::same(5.0)),
-        );
+        egui::Image::new(egui::load::SizedTexture::new(id, cover.size()))
+            .fit_to_exact_size(cover.size())
+            .rounding(egui::Rounding::same(5.0))
+            .paint_at(ui, cover);
     } else {
         paint_cover(ui.painter(), cover, None, name);
     }
@@ -903,8 +901,39 @@ impl App {
                     }
                     ui.add_enabled(false, btn(">"));
                     if self.sp.is_some() {
-                        let w = (ui.available_width() - 24.0).clamp(160.0, 440.0);
-                        ui.add_space(((ui.available_width() - w) / 2.0 - 40.0).max(8.0));
+                        let w = (ui.available_width() - 70.0).clamp(160.0, 440.0);
+                        ui.add_space(((ui.available_width() - w - 46.0) / 2.0 - 40.0).max(8.0));
+                        // Round Home button to the left of the search pill (Spotify layout).
+                        let (hr, hresp) = ui.allocate_exact_size(vec2(38.0, 38.0), Sense::click());
+                        let hc = hr.center();
+                        let on_home = self.view == View::Home;
+                        ui.painter().circle_filled(
+                            hc,
+                            19.0,
+                            mix(bg, text, if hresp.hovered() { 0.18 } else { 0.10 }),
+                        );
+                        let hcol = if on_home { text } else { text.gamma_multiply(0.8) };
+                        let hst = egui::Stroke::new(1.8_f32, hcol);
+                        ui.painter().add(egui::Shape::line(
+                            vec![pos2(hc.x - 9.0, hc.y), pos2(hc.x, hc.y - 8.0), pos2(hc.x + 9.0, hc.y)],
+                            hst,
+                        ));
+                        ui.painter().add(egui::Shape::line(
+                            vec![
+                                pos2(hc.x - 6.5, hc.y - 1.5),
+                                pos2(hc.x - 6.5, hc.y + 8.0),
+                                pos2(hc.x - 2.0, hc.y + 8.0),
+                                pos2(hc.x - 2.0, hc.y + 2.5),
+                                pos2(hc.x + 2.0, hc.y + 2.5),
+                                pos2(hc.x + 2.0, hc.y + 8.0),
+                                pos2(hc.x + 6.5, hc.y + 8.0),
+                                pos2(hc.x + 6.5, hc.y - 1.5),
+                            ],
+                            hst,
+                        ));
+                        if hresp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            actions.push(Action::Home);
+                        }
                         let qid = egui::Id::new("top_search");
                         let mut q: String = ui.data(|d| d.get_temp::<String>(qid)).unwrap_or_default();
                         let r = ui
@@ -924,10 +953,10 @@ impl App {
                             actions.push(Action::SpLink(q.trim().to_string()));
                         }
                         let top_focus = r.has_focus();
-ui.data_mut(|d| {
-    d.insert_temp(qid, q);
-    d.insert_temp(egui::Id::new("top_search_focus"), top_focus);
-});
+                        ui.data_mut(|d| {
+                            d.insert_temp(qid, q);
+                            d.insert_temp(egui::Id::new("top_search_focus"), top_focus);
+                        });
                     }
                     // "Update ready" button on the right (only shown when an update is waiting).
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1025,18 +1054,44 @@ ui.data_mut(|d| {
                         let sid = egui::Id::new("lib_alpha");
                         let mut query: String = ui.data(|d| d.get_temp::<String>(qid)).unwrap_or_default();
                         let mut alpha: bool = ui.data(|d| d.get_temp::<bool>(sid)).unwrap_or(false);
-                        let lib_search = search_bar(
-                            ui,
-                            &mut query,
-                            "Search in Your Library",
-                            accent,
-                            text,
-                            sub,
-                            mix(bg, text, 0.08),
-                        );
-                        let lib_focus = lib_search.has_focus();
-ctx.data_mut(|d| d.insert_temp(egui::Id::new("lib_search_focus"), lib_focus));
+                        let oid = egui::Id::new("lib_search_open");
+                        let mid = egui::Id::new("lib_mine");
+                        let has_me = !self.sp_user.is_empty();
+                        let mut open: bool = ui.data(|d| d.get_temp::<bool>(oid)).unwrap_or(false);
+                        let mut mine: bool = ui.data(|d| d.get_temp::<bool>(mid)).unwrap_or(false);
                         ui.horizontal(|ui| {
+                            // Small magnifier on the left; click to show or hide the search box.
+                            let (mr, mresp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+                            let mcol = if open || mresp.hovered() { text } else { sub };
+                            if open || mresp.hovered() {
+                                ui.painter().circle_filled(mr.center(), 16.0, mix(bg, text, 0.12));
+                            }
+                            let mc = pos2(mr.center().x - 1.5, mr.center().y - 1.5);
+                            ui.painter().circle_stroke(mc, 5.0, egui::Stroke::new(1.8_f32, mcol));
+                            ui.painter().line_segment(
+                                [pos2(mc.x + 3.6, mc.y + 3.6), pos2(mc.x + 8.0, mc.y + 8.0)],
+                                egui::Stroke::new(1.8_f32, mcol),
+                            );
+                            if mresp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                open = !open;
+                                if !open {
+                                    query.clear();
+                                }
+                            }
+                            // "By you": only playlists you own.
+                            if has_me {
+                                let chip = egui::Button::new(
+                                    egui::RichText::new("By you")
+                                        .size(13.0)
+                                        .color(if mine { bg } else { text }),
+                                )
+                                .fill(if mine { text } else { mix(bg, text, 0.12) })
+                                .rounding(16.0)
+                                .min_size(vec2(0.0, 28.0));
+                                if ui.add(chip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                    mine = !mine;
+                                }
+                            }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let label = if alpha { "Alphabetical" } else { "Recents" };
                                 let r = ui
@@ -1050,9 +1105,25 @@ ctx.data_mut(|d| d.insert_temp(egui::Id::new("lib_search_focus"), lib_focus));
                                 }
                             });
                         });
+                        let mut lib_focus = false;
+                        if open {
+                            let lib_search = search_bar(
+                                ui,
+                                &mut query,
+                                "Search in Your Library",
+                                accent,
+                                text,
+                                sub,
+                                mix(bg, text, 0.08),
+                            );
+                            lib_focus = lib_search.has_focus();
+                        }
+                        ctx.data_mut(|d| d.insert_temp(egui::Id::new("lib_search_focus"), lib_focus));
                         ui.data_mut(|d| {
                             d.insert_temp(qid, query.clone());
                             d.insert_temp(sid, alpha);
+                            d.insert_temp(oid, open);
+                            d.insert_temp(mid, mine);
                         });
 
                         // Rows: the pinned Liked Songs first (`None`), then the cached playlists.
@@ -1064,7 +1135,9 @@ ctx.data_mut(|d| d.insert_temp(egui::Id::new("lib_search_focus"), lib_focus));
                             .iter()
                             .enumerate()
                             .filter(|(_, it)| {
-                                matches!(it.kind, Kind::Open(_)) && (q.is_empty() || it.label.to_lowercase().contains(&q))
+                                matches!(it.kind, Kind::Open(_))
+                                    && (q.is_empty() || it.label.to_lowercase().contains(&q))
+                                    && (!mine || it.sub == me)
                             })
                             .map(|(i, _)| Some(i))
                             .take(300)
