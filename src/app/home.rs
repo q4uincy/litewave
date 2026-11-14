@@ -370,7 +370,6 @@ impl App {
         } else {
             Vec::new()
         };
-        let has_real = !real.is_empty();
         // Titles Spotify's shelves already use: the library shelf of the same name is left out.
         let real_titles: Vec<String> = real.iter().map(|(t, _, _)| t.to_lowercase()).collect();
         let user = self.sp_user.clone();
@@ -409,10 +408,7 @@ impl App {
         shelves.extend(
             library
                 .into_iter()
-                .filter(|(t, _, _)| {
-                    !(has_real && (*t == "Made for you" || *t == "Your top mixes"))
-                        && !real_titles.contains(&t.to_lowercase())
-                })
+                .filter(|(t, _, _)| !real_titles.contains(&t.to_lowercase()))
                 .map(|(t, all, cards)| HomeShelf { title: t.to_string(), subtitle: String::new(), all, cards, real: false }),
         );
 
