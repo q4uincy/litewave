@@ -431,6 +431,17 @@ impl App {
                 },
             );
             sep(ui);
+            row(
+                ui,
+                "Install updates automatically",
+                "Downloads and installs new versions in the background (installer version only).",
+                |ui| {
+                    if toggle(ui, &mut self.cfg.auto_update_install, accent).changed() {
+                        dirty = true;
+                    }
+                },
+            );
+            sep(ui);
             ui.label(
                 RichText::new(
                     "\"Update now\" installs the new version and restarts litewave. It only works with the installer version; with the portable zip, download the new zip instead.",
