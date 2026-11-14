@@ -877,6 +877,14 @@ impl App {
             return;
         }
         let (Some(session), Some(client)) = (self.sp_session.clone(), self.sp.clone()) else {
+            // Signed in for browsing but no playback connection: say so once in the log.
+            if self.sp.is_some() {
+                use std::sync::atomic::{AtomicBool, Ordering};
+                static NOTED: AtomicBool = AtomicBool::new(false);
+                if !NOTED.swap(true, Ordering::Relaxed) {
+                    spotify::note("home shelves: waiting for the playback connection (it needs Premium and a finished sign-in)");
+                }
+            }
             return;
         };
         let fresh = self
@@ -894,8 +902,30 @@ impl App {
         std::thread::spawn(move || {
             let res = match client.access_token() {
                 Ok(token) => session.home_shelves(&token),
-                Err(_) => Err(0),
+                Err(_) => {
+                    spotify::note("home shelves: no Web API token yet");
+                    Err(0)
+                }
             };
+            let (mut shelves, wait) = match res {
+                Ok(v) => (v, 0),
+                Err(w) => (Vec::new(), w),
+            };
+            // Like Spotifast: when Spotify's private Home gives no Made for you, look for Spotify's own
+            // playlists (Daily Mix, Discover Weekly ...) by search instead.
+            if !shelves.iter().any(|s| s.title == "Made for you") {
+                match client.made_for_you_search() {
+                    Ok(cards) => {
+                        spotify::note(&format!("home shelves: Made for you found by search ({} playlists)", cards.len()));
+                        shelves.insert(
+                            0,
+                            spotify::Shelf { title: "Made for you".to_string(), subtitle: String::new(), cards },
+                        );
+                    }
+                    Err(e) => spotify::note(&format!("home shelves: search for Made for you failed: {e}")),
+                }
+            }
+            let res = if shelves.is_empty() { Err(wait) } else { Ok(shelves) };
             let _ = tx.send(SpMsg::Shelves(res));
             ctx.request_repaint();
         });
