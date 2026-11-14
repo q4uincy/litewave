@@ -7,14 +7,16 @@
 mod real;
 #[cfg(feature = "spotify")]
 pub use real::{
-    last_log, log_path, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI, SHARED_CLIENT_ID,
+    last_log, log_path, note, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI,
+    SHARED_CLIENT_ID,
 };
 
 #[cfg(not(feature = "spotify"))]
 mod stub;
 #[cfg(not(feature = "spotify"))]
 pub use stub::{
-    last_log, log_path, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI, SHARED_CLIENT_ID,
+    last_log, log_path, note, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI,
+    SHARED_CLIENT_ID,
 };
 
 /// What a catalogue search found (up to 10 of each kind).
@@ -36,6 +38,31 @@ pub struct Entry {
     pub name: String,
     pub sub: String,
     pub art: Option<String>,
+}
+
+/// What a card on one of Spotify's own Home shelves opens.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShelfKind {
+    Playlist,
+    Album,
+    Artist,
+    Show,
+}
+
+/// One card of a Home shelf: its kind and the usual id / name / second line / cover.
+#[derive(Clone)]
+pub struct ShelfCard {
+    pub kind: ShelfKind,
+    pub entry: Entry,
+}
+
+/// One shelf of Spotify's own Home page, with Spotify's own title.
+#[derive(Clone)]
+pub struct Shelf {
+    pub title: String,
+    /// Small line Spotify puts with the title, e.g. "Brand new music from artists you love." (empty if none).
+    pub subtitle: String,
+    pub cards: Vec<ShelfCard>,
 }
 
 /// Events from the playback engine for the track it was last asked to play.

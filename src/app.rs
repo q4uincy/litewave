@@ -19,7 +19,11 @@ use ipod::{IpodState, Load, Node};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{channel, Receiver, Sender},
+        Arc,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -131,6 +135,8 @@ pub enum SpMsg {
     Editable(Result<Vec<spotify::Entry>, String>),
     /// Details of a song the phone started that is not in litewave's list.
     Remote(String, Result<Track, String>),
+    /// Spotify's own Home shelves. `Err` holds the seconds Spotify asked us to wait (0 = none).
+    Shelves(Result<Vec<spotify::Shelf>, u64>),
 }
 
 /// Results from the theme gallery threads.
@@ -159,6 +165,8 @@ pub struct App {
     player: Option<Playback>,
     cfg: Config,
     cfg_dirty: bool,
+    /// A settings save is running on a worker thread (Windows Credential Manager can be slow).
+    cfg_saving: Arc<AtomicBool>,
     error: Option<String>,
     /// Full local library.
     local: Vec<Track>,
@@ -250,6 +258,12 @@ pub struct App {
     pub(crate) recent: VecDeque<Track>,
     /// The Spotify account's display name (Home shows "Made For <name>").
     pub(crate) sp_user: String,
+    /// Spotify's own Home shelves and when they were read (private feed; None until read).
+    pub(crate) sp_shelves: Option<(Instant, Vec<spotify::Shelf>)>,
+    /// Earliest time to ask for the shelves again (set after every request, longer after a failure).
+    shelves_next: Option<Instant>,
+    /// A shelves request is running.
+    shelves_busy: bool,
     /// Which tab of the queue panel is shown: false = Queue, true = Recent.
     pub(crate) queue_recent_tab: bool,
     /// When the sidebar last asked for the playlist list (so a failed load is not retried every frame).
@@ -308,6 +322,7 @@ impl App {
             player,
             cfg,
             cfg_dirty: false,
+            cfg_saving: Arc::new(AtomicBool::new(false)),
             error,
             local: Vec::new(),
             tracks: Vec::new(),
@@ -378,6 +393,9 @@ impl App {
             queue: Vec::new(),
             recent: VecDeque::new(),
             sp_user: String::new(),
+            sp_shelves: None,
+            shelves_next: None,
+            shelves_busy: false,
             queue_recent_tab: false,
             list_fetch: HashMap::new(),
             home_back: None,
@@ -610,7 +628,11 @@ impl App {
         self.sp_status = if refresh.is_some() {
             "Reconnecting to Spotify...".to_string()
         } else {
-            "Connecting... finish the login in your browser.".to_string()
+            if self.cfg.spotify_client_id.trim().is_empty() {
+                "Connecting... finish the login in your browser.".to_string()
+            } else {
+                "Connecting... approve both Spotify pages in your browser (one for playback, one for your own Client ID).".to_string()
+            }
         };
         let own_id = self.cfg.spotify_client_id.trim().to_string();
         if !own_id.is_empty() && own_id.len() != 32 {
@@ -623,30 +645,35 @@ impl App {
         let browse_refresh = self.cfg.spotify_browse_refresh.clone();
         let want_connect = true; // litewave always shows up as a device in Spotify
         let start_volume = self.cfg.volume;
-        let interactive = refresh.is_none();
         let tx = self.sp_tx.clone();
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let res = (|| -> Result<SpLogin, String> {
+                spotify::note("sign-in: waiting for the browser (or refreshing a saved sign-in)");
                 // Playback signs in with librespot's own client ID: Spotify accepts it for streaming.
-                let play = match &refresh {
-                    Some(r) => spotify::Client::from_refresh(r, spotify::SHARED_CLIENT_ID)?,
-                    None => spotify::Client::login(spotify::SHARED_CLIENT_ID)?,
+                // With the user's own Client ID there are two sign-ins; they run in one browser tab,
+                // one right after the other.
+                let (play, browse_now) = match &refresh {
+                    Some(r) => (spotify::Client::from_refresh(r, spotify::SHARED_CLIENT_ID)?, None),
+                    None if own_id.is_empty() => (spotify::Client::login(spotify::SHARED_CLIENT_ID)?, None),
+                    None => spotify::Client::login_pair(spotify::SHARED_CLIENT_ID, Some(own_id.as_str()))?,
                 };
+                spotify::note("sign-in: done, starting playback");
                 // Playback needs Premium, so a failure here is reported but does not undo the sign-in.
                 let engine = play
                     .access_token()
                     .and_then(|t| spotify::Engine::connect(&t, ctx.clone(), want_connect, start_volume));
+                spotify::note(if engine.is_ok() { "playback: started" } else { "playback: could not start" });
                 let play_rt = play.refresh_token();
                 if own_id.is_empty() {
                     // No own app: browsing shares the playback sign-in (and Spotify rate-limits it).
                     return Ok((play, engine, play_rt, None));
                 }
                 // Browsing uses the user's own Spotify app, which has its own request quota.
-                let browse = match (&browse_refresh, interactive) {
-                    (_, true) => spotify::Client::login(&own_id)?,
-                    (Some(r), false) => spotify::Client::from_refresh(r, &own_id)?,
-                    (None, false) => {
+                let browse = match (browse_now, &browse_refresh) {
+                    (Some(b), _) => b,
+                    (None, Some(r)) => spotify::Client::from_refresh(r, &own_id)?,
+                    (None, None) => {
                         return Err("Sign in again to use your own Client ID for browsing.".to_string())
                     }
                 };
@@ -672,6 +699,7 @@ impl App {
                 SpMsg::Liked(ids) => self.liked_ids = ids.into_iter().collect(),
                 SpMsg::UserName(n) => self.sp_user = n,
                 SpMsg::Connected(Ok((client, engine, refresh, browse_refresh))) => {
+                    spotify::note("window: sign-in result received");
                     self.sp = Some(client);
                     if let Some(c) = self.sp.clone() {
                         let tx = self.sp_tx.clone();
@@ -719,8 +747,10 @@ impl App {
                     self.cfg.spotify_refresh = Some(refresh);
                     self.cfg.spotify_browse_refresh = browse_refresh;
                     self.cfg_dirty = true;
+                    self.shelves_next = None;
                     self.refresh_top();
                     self.load_editable();
+                    spotify::note("window: sign-in result applied");
                     if self.sp_interactive {
                         self.sp_interactive = false;
                         self.sp_nav.clear();
@@ -739,6 +769,20 @@ impl App {
                     }
                 }
                 SpMsg::Remote(_, Err(_)) => {}
+                SpMsg::Shelves(res) => {
+                    self.shelves_busy = false;
+                    match res {
+                        Ok(v) => {
+                            self.sp_shelves = Some((Instant::now(), v));
+                            self.shelves_next = None;
+                        }
+                        // Quietly: no message, Home just keeps what it has (or the library shelves).
+                        Err(wait) => {
+                            let secs = wait.max(120);
+                            self.shelves_next = Some(Instant::now() + Duration::from_secs(secs));
+                        }
+                    }
+                }
                 SpMsg::Editable(Err(_)) => {}
                 SpMsg::Done(res, reload) => {
                     match res {
@@ -823,6 +867,38 @@ impl App {
         }
         self.list_fetch.insert(key, Instant::now());
         self.spawn_fetch(node);
+    }
+
+    /// Asks for Spotify's own Home shelves on a worker thread, unless they are off in Settings, there is
+    /// no playback connection, a copy under 10 minutes old exists, a request is running, or the last one
+    /// failed less than 2 minutes ago (longer if Spotify asked us to wait). Safe to call every frame.
+    pub(crate) fn want_shelves(&mut self) {
+        if !self.cfg.home_shelves || self.shelves_busy {
+            return;
+        }
+        let (Some(session), Some(client)) = (self.sp_session.clone(), self.sp.clone()) else {
+            return;
+        };
+        let fresh = self
+            .sp_shelves
+            .as_ref()
+            .map_or(false, |(at, _)| at.elapsed() < Duration::from_secs(600));
+        let waiting = self.shelves_next.map_or(false, |t| Instant::now() < t);
+        if fresh || waiting {
+            return;
+        }
+        self.shelves_busy = true;
+        self.shelves_next = Some(Instant::now() + Duration::from_secs(120));
+        let tx = self.sp_tx.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let res = match client.access_token() {
+                Ok(token) => session.home_shelves(&token),
+                Err(_) => Err(0),
+            };
+            let _ = tx.send(SpMsg::Shelves(res));
+            ctx.request_repaint();
+        });
     }
 
     /// True when Back has somewhere to go: an earlier Spotify page, or Home (for a page opened from it).
@@ -913,6 +989,8 @@ impl App {
     fn disconnect_spotify(&mut self) {
         self.sp = None;
         self.sp_session = None;
+        self.sp_shelves = None;
+        self.shelves_next = None;
         self.sp_editable.clear();
         if let Some(p) = self.player.as_mut() {
             p.drop_spotify();
@@ -2471,9 +2549,21 @@ impl eframe::App for App {
         }
 
         // Debounced config save (not while a slider is being dragged).
+        // The save runs on a worker thread: it writes the Spotify tokens to Windows Credential Manager,
+        // and nothing like that may ever stall the window.
         if self.cfg_dirty && !ctx.input(|i| i.pointer.any_down()) {
-            self.cfg.save();
-            self.cfg_dirty = false;
+            if self.cfg_saving.load(Ordering::Acquire) {
+                ctx.request_repaint_after(Duration::from_millis(100)); // try again shortly
+            } else {
+                self.cfg_saving.store(true, Ordering::Release);
+                let cfg = self.cfg.clone();
+                let flag = self.cfg_saving.clone();
+                std::thread::spawn(move || {
+                    cfg.save();
+                    flag.store(false, Ordering::Release);
+                });
+                self.cfg_dirty = false;
+            }
         }
 
         if self.player.as_ref().map_or(false, |p| p.is_playing() || p.is_buffering()) {

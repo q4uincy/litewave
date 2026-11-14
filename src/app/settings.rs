@@ -102,6 +102,17 @@ impl App {
             sep(ui);
             row(
                 ui,
+                "Show Spotify's own Home shelves",
+                "Adds shelves like Made for you and Your top mixes to Home, with Spotify's own titles. Unofficial: it reads Spotify's private Home feed through your playback sign-in and may stop working at any time. If it fails, Home shows your library as before.",
+                |ui| {
+                    if toggle(ui, &mut self.cfg.home_shelves, accent).changed() {
+                        dirty = true;
+                    }
+                },
+            );
+            sep(ui);
+            row(
+                ui,
                 "Allow explicit content",
                 "When off, explicit songs are greyed out and skipped.",
                 |ui| {

@@ -70,6 +70,8 @@ pub struct Config {
     pub spotify_normalise: bool,
     /// Spotify gapless playback.
     pub spotify_gapless: bool,
+    /// Home shows Spotify's own shelves (Made for you, Your top mixes ...), read from Spotify's private Home feed.
+    pub home_shelves: bool,
     /// Windows: the window's close button hides litewave to the tray icon instead of quitting.
     pub close_to_tray: bool,
     /// Equalizer on/off and the gain in dB of its 10 bands (31 Hz to 16 kHz).
@@ -109,6 +111,7 @@ impl Default for Config {
             spotify_quality: 1,
             spotify_normalise: true,
             spotify_gapless: true,
+            home_shelves: true,
             close_to_tray: false,
             eq_enabled: false,
             eq_gains: [0.0; 10],
@@ -198,6 +201,9 @@ impl Config {
     }
 
     pub fn save(&self) {
+        // One save at a time (saves run on a worker thread).
+        static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Some(path) = config_path() else { return };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);

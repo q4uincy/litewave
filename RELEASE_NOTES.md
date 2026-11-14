@@ -1,3 +1,11 @@
 ## What's new
--fixed some bugs
--still working on spotify login freeze issue
+- Spotify's own Home page: your real shelves in Spotify's order and wording (It's New Music Friday!, Friday drops picked for you, Recommended for today, Made For you, Albums featuring songs you like, Recommended Stations, More like ...). Unofficial: turn it off in Settings; if Spotify does not answer, Home looks as before
+- Signing in with your own Client ID now runs both Spotify approvals in one browser tab, with no "connected" page in between
+- Equalizer and a visualizer in the play bar
+- Spotify-style library panel: Liked Songs pinned on top, bigger covers, a search box, a Recents / Alphabetical switch and a + Create button
+- Search bar in the top bar: type and press Enter to search or paste a Spotify link
+- New Home shelf: Albums featuring songs you like
+- Albums show the artist and playlists show their owner under the cover
+- Home starts with the filter chips, no greeting
+- Your local music page is now under On this PC as Local music
+- Fixed Themes and Settings overlapping Add music folder in the sidebar

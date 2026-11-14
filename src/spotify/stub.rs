@@ -1,4 +1,4 @@
-use super::{Entry, SearchResults, SpEvent};
+use super::{Entry, SearchResults, Shelf, SpEvent};
 use crate::library::Track;
 use std::{path::PathBuf, time::Duration};
 
@@ -18,6 +18,8 @@ pub fn log_path() -> Option<PathBuf> {
     None
 }
 
+pub fn note(_msg: &str) {}
+
 pub fn status_note() -> String {
     String::new()
 }
@@ -27,6 +29,9 @@ pub struct Client;
 
 impl Client {
     pub fn login(_client_id: &str) -> Result<Client, String> {
+        Err(OFF.to_string())
+    }
+    pub fn login_pair(_first_id: &str, _second_id: Option<&str>) -> Result<(Client, Option<Client>), String> {
         Err(OFF.to_string())
     }
     pub fn from_refresh(_refresh: &str, _client_id: &str) -> Result<Client, String> {
@@ -142,5 +147,9 @@ impl SessionHandle {
     }
     pub fn playlist(&self, _id: &str) -> Result<Vec<crate::library::Track>, String> {
         Err(OFF.to_string())
+    }
+    /// Spotify's own Home shelves. `Err` holds the seconds Spotify asked us to wait (0 = none).
+    pub fn home_shelves(&self, _sp_t: &str) -> Result<Vec<Shelf>, u64> {
+        Err(0)
     }
 }

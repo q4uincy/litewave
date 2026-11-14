@@ -21,6 +21,7 @@ spotify = [
     "dep:urlencoding",
     "dep:vergen",
     "dep:log",
+    "dep:iana-time-zone",
 ]
 
 [dependencies]
@@ -52,6 +53,8 @@ urlencoding = { version = "2", optional = true }
 # but a fresh dependency resolve picks vergen 9.1.0 (vergen-lib 9.x) and the build script fails to compile.
 vergen = { version = "=9.0.6", optional = true }
 log = { version = "0.4", optional = true }
+# Local time zone name (e.g. "Europe/Berlin") for Spotify's Home shelves. Already in the lockfile through chrono.
+iana-time-zone = { version = "0.1", optional = true }
 
 # Spotify sign-in tokens are kept in Windows Credential Manager.
 [target.'cfg(windows)'.dependencies]

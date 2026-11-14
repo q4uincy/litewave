@@ -3132,6 +3132,7 @@ dependencies = [
  "chrono",
  "dirs",
  "eframe",
+ "iana-time-zone",
  "image",
  "librespot",
  "lofty",

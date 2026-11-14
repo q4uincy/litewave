@@ -7,6 +7,7 @@ use super::ipod::{Item, Kind, Node};
 use super::widgets::{initial, paint_hub_tile, tint_for, HubIcon};
 use super::{Action, App};
 use crate::art::{self, ArtCache, ArtKey};
+use crate::spotify::{ShelfCard, ShelfKind};
 use crate::theme::mix;
 use eframe::egui::{
     self, load::SizedTexture, pos2, vec2, Align2, Color32, FontId, Rect, Rounding, Sense, TextureId,
@@ -59,6 +60,16 @@ struct Tile {
     art: Option<String>,
     liked: bool,
     go: Click,
+}
+
+/// One shelf on Home: Spotify's own (`real`, with its subtitle) or one built from the library.
+struct HomeShelf {
+    title: String,
+    subtitle: String,
+    /// "Show all" target, where there is one.
+    all: Option<Node>,
+    cards: Vec<Card>,
+    real: bool,
 }
 
 struct Card {
@@ -153,6 +164,24 @@ fn card(ui: &mut egui::Ui, cache: &mut ArtCache, c: &Card, base: Color32, text: 
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
+/// A card of one of Spotify's own shelves: the same look as the library cards, opening the same pages.
+fn shelf_card(c: &ShelfCard) -> Card {
+    let e = &c.entry;
+    let (node, circle) = match c.kind {
+        ShelfKind::Playlist => (Node::SpPlaylist(e.id.clone(), e.name.clone()), false),
+        ShelfKind::Album => (Node::SpAlbum(e.id.clone(), e.name.clone()), false),
+        ShelfKind::Artist => (Node::SpArtist(e.id.clone(), e.name.clone()), true),
+        ShelfKind::Show => (Node::SpShow(e.id.clone(), e.name.clone()), false),
+    };
+    Card {
+        title: e.name.clone(),
+        sub: e.sub.clone(),
+        art: e.art.clone().map(ArtKey::Url),
+        circle,
+        go: Click::Open(node),
+    }
+}
+
 /// Playlist / album / artist items from a cached list.
 fn open_items(items: &[Item]) -> impl Iterator<Item = (&Item, &Node)> {
     items.iter().filter_map(|it| match &it.kind {
@@ -213,6 +242,8 @@ impl App {
         for n in [Node::SpPlaylists, Node::SpAlbums, Node::SpArtists, Node::SpShows, Node::SpLiked] {
             self.want_list(n);
         }
+        // Spotify's own shelves (read quietly in the background; nothing is shown until they arrive).
+        self.want_shelves();
         let base = ui.visuals().panel_fill;
         let playlists = self.cached_items("SpPlaylists");
         let albums = self.cached_items("SpAlbums");
@@ -302,6 +333,31 @@ impl App {
                 })
                 .collect()
         };
+        // Spotify's own shelves come first, in Spotify's order and with Spotify's titles. The library
+        // shelves follow, except the ones Spotify's cover: its Made for you / Your top mixes replace the
+        // guessed ones, and its "Albums featuring songs you like" replaces the counted one.
+        let real: Vec<(String, String, Vec<Card>)> = if self.cfg.home_shelves {
+            self.sp_shelves
+                .as_ref()
+                .map(|(_, v)| {
+                    v.iter()
+                        .filter(|s| !s.cards.is_empty())
+                        .map(|s| {
+                            (
+                                s.title.clone(),
+                                s.subtitle.clone(),
+                                s.cards.iter().take(per_row).map(shelf_card).collect::<Vec<Card>>(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let has_real = !real.is_empty();
+        // Titles Spotify's shelves already use: the library shelf of the same name is left out.
+        let real_titles: Vec<String> = real.iter().map(|(t, _, _)| t.to_lowercase()).collect();
         let user = self.sp_user.clone();
         let mixes: Vec<Item> = playlists
             .iter()
@@ -312,7 +368,7 @@ impl App {
             .cloned()
             .collect();
         let made: Vec<Item> = playlists.iter().filter(|it| is_made_for_you(&it.label)).cloned().collect();
-        let shelves: Vec<(&str, Option<Node>, Vec<Card>)> = vec![
+        let library: Vec<(&str, Option<Node>, Vec<Card>)> = vec![
             ("Recents", None, recent),
             ("Made for you", Some(Node::SpPlaylists), from_items(&made, "Made for you", false)),
             ("Your playlists", Some(Node::SpPlaylists), from_items(&playlists, "Playlist", false)),
@@ -322,6 +378,27 @@ impl App {
             ("Your artists", Some(Node::SpArtists), from_items(&artists, "Artist", true)),
             ("Your podcasts", Some(Node::SpShows), from_items(&shows, "Podcast", false)),
         ];
+        let mut shelves: Vec<HomeShelf> = Vec::new();
+        // Where litewave has a page for the same shelf ("Your playlists" ...), "Show all" opens it.
+        let all_for = |t: &str| {
+            library
+                .iter()
+                .find(|(lt, _, _)| lt.eq_ignore_ascii_case(t))
+                .and_then(|(_, a, _)| a.clone())
+        };
+        for (title, subtitle, cards) in real {
+            let all = all_for(&title);
+            shelves.push(HomeShelf { title, subtitle, all, cards, real: true });
+        }
+        shelves.extend(
+            library
+                .into_iter()
+                .filter(|(t, _, _)| {
+                    !(has_real && (*t == "Made for you" || *t == "Your top mixes"))
+                        && !real_titles.contains(&t.to_lowercase())
+                })
+                .map(|(t, all, cards)| HomeShelf { title: t.to_string(), subtitle: String::new(), all, cards, real: false }),
+        );
 
         let mut clicked: Option<Click> = None;
         egui::ScrollArea::vertical()
@@ -362,18 +439,22 @@ impl App {
                     });
                 }
 
-                for (title, all, cards) in &shelves {
-                    let podcast = *title == "Your podcasts";
+                for shelf in &shelves {
+                    let (title, all, cards) = (&shelf.title, &shelf.all, &shelf.cards);
+                    let podcast = title.as_str() == "Your podcasts" && !shelf.real;
                     if cards.is_empty() || (filter == 1 && podcast) || (filter == 2 && !podcast) {
                         continue;
                     }
                     ui.add_space(14.0);
-                    let named = *title == "Made for you" && !user.is_empty();
+                    let named = title.as_str() == "Made for you" && !shelf.real && !user.is_empty();
                     if named {
                         ui.label(egui::RichText::new("Made For").size(12.0).color(sub));
+                    } else if !shelf.subtitle.is_empty() {
+                        // Spotify's own small line above the title ("Brand new music from artists you love.").
+                        ui.label(egui::RichText::new(shelf.subtitle.as_str()).size(12.0).color(sub));
                     }
                     ui.horizontal(|ui| {
-                        let head: &str = if named { user.as_str() } else { *title };
+                        let head: &str = if named { user.as_str() } else { title.as_str() };
                         ui.label(egui::RichText::new(head).size(22.0).strong().color(text));
                         if let Some(n) = all {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
