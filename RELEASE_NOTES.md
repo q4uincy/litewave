@@ -1,9 +1,9 @@
 ## What's new
-- Spotify's own Home page: your real shelves in Spotify's order and wording (It's New Music Friday!, Friday drops picked for you, Recommended for today, Made For you, Albums featuring songs you like, Recommended Stations, More like ...). Unofficial: turn it off in Settings; if Spotify does not answer, Home looks as before
-- Signing in with your own Client ID now runs both Spotify approvals in one browser tab, with no "connected" page in between
+- Home now shows Made for you and Your top mixes, with a new way of loading them. If they don't load, litewave looks for your Daily Mix, Discover Weekly, Release Radar, On Repeat and Repeat Rewind playlists instead. Problems are written to the log (Settings > Help > open log) with a reason. Unofficial: you can turn it off in Settings, and if nothing works, Home looks as before
+- Signing in with your own Client ID now runs both approvals in one browser tab, with no "connected" page in between
 - Equalizer and a visualizer in the play bar
-- Spotify-style library panel: Liked Songs pinned on top, bigger covers, a search box, a Recents / Alphabetical switch and a + Create button
-- Search bar in the top bar: type and press Enter to search or paste a Spotify link
+- New library panel: Liked Songs pinned on top, bigger covers, a search box, a Recents / Alphabetical switch and a + Create button
+- Search bar in the top bar: type and press Enter to search or paste a link
 - New Home shelf: Albums featuring songs you like
 - Albums show the artist and playlists show their owner under the cover
 - Home starts with the filter chips, no greeting
