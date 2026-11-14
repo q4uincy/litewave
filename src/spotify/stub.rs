@@ -71,6 +71,9 @@ impl Client {
     pub fn search(&self, _q: &str) -> Result<SearchResults, String> {
         Err(OFF.to_string())
     }
+    pub fn made_for_you_search(&self) -> Result<Vec<super::ShelfCard>, String> {
+        Err(OFF.to_string())
+    }
     pub fn saved_shows(&self) -> Result<Vec<Entry>, String> {
         Err(OFF.to_string())
     }

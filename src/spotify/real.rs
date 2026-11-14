@@ -560,6 +560,57 @@ impl Client {
         })
     }
 
+    /// Spotify's own "made for you" playlists found by search (Daily Mix 1-6, Discover Weekly ...), for
+    /// when the private Home feed does not answer. Only playlists owned by the user `spotify` count,
+    /// as in Spotifast.
+    pub fn made_for_you_search(&self) -> Result<Vec<ShelfCard>, String> {
+        let mut out: Vec<ShelfCard> = Vec::new();
+        let mut err: Option<String> = None;
+        for term in MADE_FOR_YOU_TERMS {
+            let url = format!("{API}/search?q={}&type=playlist&limit=10", urlencoding::encode(term));
+            let v = match self.get(&url) {
+                Ok(v) => v,
+                Err(e) => {
+                    err = Some(e);
+                    break;
+                }
+            };
+            let mut found: Vec<ShelfCard> = Vec::new();
+            for p in v["playlists"]["items"].as_array().into_iter().flatten() {
+                let Some(id) = p["id"].as_str() else { continue };
+                let Some(name) = p["name"].as_str() else { continue };
+                let name = name.trim();
+                if !made_for_you_name(term, name)
+                    || p["owner"]["id"].as_str() != Some("spotify")
+                    || p["uri"].as_str() == Some(DJ_URI)
+                {
+                    continue;
+                }
+                let key = name.to_lowercase();
+                if out.iter().chain(found.iter()).any(|c| c.entry.name.to_lowercase() == key) {
+                    continue;
+                }
+                let desc = strip_html(p["description"].as_str().unwrap_or(""));
+                found.push(ShelfCard {
+                    kind: ShelfKind::Playlist,
+                    entry: Entry {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        sub: if desc.is_empty() { "By Spotify".to_string() } else { desc },
+                        art: pick_image(&p["images"]),
+                    },
+                });
+            }
+            found.sort_by(|a, b| a.entry.name.cmp(&b.entry.name));
+            out.extend(found.into_iter().take(6));
+        }
+        if out.is_empty() {
+            Err(err.unwrap_or_else(|| "no Made for you playlists found".to_string()))
+        } else {
+            Ok(out)
+        }
+    }
+
     pub fn saved_shows(&self) -> Result<Vec<Entry>, String> {
         let items = self.collect(format!("{API}/me/shows?limit=50"), None)?;
         Ok(items
@@ -1344,58 +1395,44 @@ impl SessionHandle {
 // ---- Spotify's own Home shelves -------------------------------------------
 //
 // Spotify's apps get their Home page from a private "Pathfinder" service, not the public Web API.
-// The `home` query below is the one Spotify's web player sends (its request and answer were captured
-// from open.spotify.com and the shapes here follow that capture). It is sent the way the open-source
-// Spotifast (MIT) sends its Home reads: the playback session's own tokens as headers and a Web API
-// access token as `sp_t`. Spotify can change or refuse this at any time, so every failure just means
-// "no extra shelves": Home keeps showing the user's library.
+// This follows the open-source Spotifast (MIT): the `homeSection` query for two shelves by their
+// section ids (Made for you, Your top mixes), sent with the playback session's own tokens as headers
+// and a Web API access token as `sp_t`. There is no second guess with another token. If the private
+// request fails, the app asks `Client::made_for_you_search` for Spotify's own playlists instead.
+// Spotify can change or refuse all of this at any time, so every failure just means "no extra
+// shelves" (Home keeps showing the user's library) and is written to the log, never shown as a pop-up.
 
 const PATHFINDER: &str = "https://api-partner.spotify.com/pathfinder/v2/query";
-/// The web player's persisted `home` query.
-const HOME_HASH: &str = "5fb7da7a03ee2776c0670856609cb85a189a3cecc36cc160b91cde79063b9cf1";
-/// Persisted `homeSection` query (one shelf by its section id), used if `home` does not answer.
+/// The web player's persisted `homeSection` query (one shelf by its section id), the one Spotifast sends.
 const HOME_SECTION_HASH: &str = "eb3fba2d388cf4fc4d696b1757a58584e9538a3b515ea742e9cc9465807340be";
 /// Cards asked for per shelf (Home shows at most ten, whatever the window width).
-const HOME_PAGE: usize = 10;
-/// No more shelves than this are kept.
-const HOME_SHELVES: usize = 24;
+const HOME_PAGE: usize = 20;
 /// Spotify's DJ is a special context that librespot cannot play as a playlist.
 const DJ_URI: &str = "spotify:playlist:37i9dQZF1EYkqdzj48dyYq";
-/// Section kinds that are not shelves of cards: the row of short videos, and Recents (litewave
-/// shows its own Recents).
-const SKIPPED_SECTIONS: [&str; 2] = ["HomeShortsSectionData", "HomeRecentlyPlayedSectionData"];
-/// Fallback when the `home` query fails: these shelves one by one, in this order, with the title
-/// used if Spotify sends none. Made for you and Your top mixes are the two Spotifast reads; the
-/// others are section ids from the Psst project's source and from the capture.
-const HOME_SECTIONS: [(&str, &str); 5] = [
+/// The two shelves Spotifast reads: section id and title. The title is fixed here (not taken from
+/// Spotify's answer) so the rest of the app can recognise the shelf in any language.
+const HOME_SECTIONS: [(&str, &str); 2] = [
     ("spotify:section:0JQ5DAUnp4wcj0bCb3wh3S", "Made for you"),
     ("spotify:section:0JQ5DAnM3wGh0gz1MXnu89", "Your top mixes"),
-    ("spotify:section:0JQ5DAnM3wGh0gz1MXnu3R", "Recommended Stations"),
-    ("spotify:section:0JQ5DAnM3wGh0gz1MXnu3n", "Best of artists"),
-    ("spotify:section:0JQ5DAIiKWzVFULQfUm85X", "Jump back in"),
 ];
+/// Names searched for when the private Home feed does not answer.
+const MADE_FOR_YOU_TERMS: [&str; 5] = ["Daily Mix", "Discover Weekly", "Release Radar", "On Repeat", "Repeat Rewind"];
 
-/// A random version-4 UUID. Spotify's web player sends one (its `sp_t` cookie) as `sp_t`.
-fn random_uuid() -> String {
-    let mut b: [u8; 16] = rand::thread_rng().gen();
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let hex: Vec<String> = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        hex[0..4].concat(),
-        hex[4..6].concat(),
-        hex[6..8].concat(),
-        hex[8..10].concat(),
-        hex[10..16].concat()
-    )
+/// True when a playlist called `name` is the Spotify playlist searched for with `term`
+/// ("Daily Mix" also takes "Daily Mix 1", "Daily Mix 2" ...).
+fn made_for_you_name(term: &str, name: &str) -> bool {
+    let name = name.trim();
+    name.eq_ignore_ascii_case(term)
+        || (term == "Daily Mix"
+            && name
+                .strip_prefix("Daily Mix ")
+                .map_or(false, |n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
 }
 
 impl SessionHandle {
-    /// Spotify's own Home shelves, in Spotify's order and wording. Blocking: call it from a worker
-    /// thread. `sp_t` is a Web API access token, sent as the query's `sp_t` first (as Spotifast does);
-    /// if Spotify does not take it, once more with a random UUID (what the web player sends). `Err`
-    /// holds the seconds Spotify asked us to wait (0 = none).
+    /// Spotify's own Home shelves (Made for you, Your top mixes), in that order. Blocking: call it from
+    /// a worker thread. `sp_t` is a Web API access token. `Err` holds the seconds Spotify asked us to
+    /// wait (0 = none); the reason for any failure is written to the log.
     pub fn home_shelves(&self, sp_t: &str) -> Result<Vec<Shelf>, u64> {
         let session = self.session.clone();
         let auth = self.handle.block_on(async move {
@@ -1403,38 +1440,42 @@ impl SessionHandle {
             let client_token = session.spclient().client_token().await.map_err(|_| ())?;
             Ok::<_, ()>((token.access_token.clone(), client_token, session.country()))
         });
-        let (bearer, client_token, country) = auth.map_err(|_| 0u64)?;
+        let (bearer, client_token, country) = match auth {
+            Ok(a) => a,
+            Err(_) => {
+                note("home shelves: could not get the playback connection's tokens");
+                return Err(0);
+            }
+        };
         let zone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
 
-        // The whole Home page in one request.
-        for sp in [sp_t.to_string(), random_uuid()] {
-            if let Some(shelves) = fetch_home(&bearer, &client_token, &zone, &sp)? {
-                if !shelves.is_empty() {
-                    return Ok(shelves);
-                }
-            }
-        }
-        // Otherwise a few known shelves, one request after another.
         let mut out: Vec<Shelf> = Vec::new();
-        for (uri, fallback) in HOME_SECTIONS {
-            let shelf = fetch_section(&bearer, &client_token, &country, &zone, sp_t, uri, fallback)?;
-            if let Some(shelf) = shelf {
-                if !shelf.cards.is_empty() {
+        let mut wait = 0u64;
+        for (uri, title) in HOME_SECTIONS {
+            match fetch_section(&bearer, &client_token, &country, &zone, sp_t, uri, title) {
+                Ok(Some(shelf)) if !shelf.cards.is_empty() => {
+                    note(&format!("home shelves: {title}: {} cards", shelf.cards.len()));
                     out.push(shelf);
+                }
+                Ok(_) => {}
+                Err(secs) => {
+                    note(&format!("home shelves: Spotify asked us to wait {secs}s"));
+                    wait = wait.max(secs);
+                    break;
                 }
             }
             std::thread::sleep(Duration::from_millis(150));
         }
         if out.is_empty() {
-            Err(0)
+            Err(wait)
         } else {
             Ok(out)
         }
     }
 }
 
-/// Sends one Pathfinder request. `Ok(None)`: it failed or the answer was not JSON.
-/// `Err(secs)`: Spotify asked us to slow down. No token is ever logged or put in an error.
+/// Sends one Pathfinder request. `Ok(None)`: it failed or the answer was not JSON (the reason is
+/// logged). `Err(secs)`: Spotify asked us to slow down. No token is ever logged or put in an error.
 fn pathfinder(bearer: &str, client_token: &str, body: Value) -> Result<Option<Value>, u64> {
     let res = agent()
         .post(PATHFINDER)
@@ -1442,35 +1483,30 @@ fn pathfinder(bearer: &str, client_token: &str, body: Value) -> Result<Option<Va
         .set("client-token", client_token)
         .send_json(body);
     match res {
-        Ok(r) => Ok(r.into_json::<Value>().ok()),
+        Ok(r) => match r.into_json::<Value>() {
+            Ok(v) => Ok(Some(v)),
+            Err(_) => {
+                note("home shelves: Spotify's answer was not JSON");
+                Ok(None)
+            }
+        },
         Err(ureq::Error::Status(429, r)) => Err(r
             .header("Retry-After")
             .and_then(|h| h.parse::<u64>().ok())
             .unwrap_or(30)
             .clamp(5, 600)),
-        Err(_) => Ok(None),
+        Err(ureq::Error::Status(code, _)) => {
+            note(&format!("home shelves: Spotify answered HTTP {code}"));
+            Ok(None)
+        }
+        Err(_) => {
+            note("home shelves: no connection to Spotify");
+            Ok(None)
+        }
     }
 }
 
-/// The web player's `home` query: every shelf of the Home page.
-fn fetch_home(bearer: &str, client_token: &str, zone: &str, sp_t: &str) -> Result<Option<Vec<Shelf>>, u64> {
-    let body = json!({
-        "operationName": "home",
-        "variables": {
-            "includeHomeChapterVideoCards": false,
-            "homeEndUserIntegration": "INTEGRATION_WEB_PLAYER",
-            "timeZone": zone,
-            "sp_t": sp_t,
-            "facet": "",
-            "sectionItemsLimit": HOME_PAGE,
-            "includeEpisodeContentRatingsV2": true
-        },
-        "extensions": {"persistedQuery": {"version": 1, "sha256Hash": HOME_HASH}}
-    });
-    Ok(pathfinder(bearer, client_token, body)?.and_then(|v| parse_home(&v).ok()))
-}
-
-/// One shelf by its section id.
+/// One shelf by its section id, titled `title`.
 fn fetch_section(
     bearer: &str,
     client_token: &str,
@@ -1478,7 +1514,7 @@ fn fetch_section(
     zone: &str,
     sp_t: &str,
     uri: &str,
-    fallback: &str,
+    title: &str,
 ) -> Result<Option<Shelf>, u64> {
     let body = json!({
         "operationName": "homeSection",
@@ -1492,7 +1528,19 @@ fn fetch_section(
         },
         "extensions": {"persistedQuery": {"version": 1, "sha256Hash": HOME_SECTION_HASH}}
     });
-    Ok(pathfinder(bearer, client_token, body)?.and_then(|v| parse_section(&v, fallback).ok()))
+    let Some(v) = pathfinder(bearer, client_token, body)? else {
+        return Ok(None);
+    };
+    match parse_section(&v, title) {
+        Ok(mut shelf) => {
+            shelf.title = title.to_string();
+            Ok(Some(shelf))
+        }
+        Err(e) => {
+            note(&format!("home shelves: {title}: {e}"));
+            Ok(None)
+        }
+    }
 }
 
 /// Text of a description with its HTML tags and common entities removed.
@@ -1600,51 +1648,6 @@ fn has_errors(body: &Value) -> bool {
         .map_or(false, |e| !e.is_null() && e.as_array().map_or(true, |a| !a.is_empty()))
 }
 
-/// A section's own text: `data.title.transformedLabel` / `data.subtitle.transformedLabel`.
-fn section_text(section: &Value, field: &str) -> String {
-    section
-        .pointer(&format!("/data/{field}/transformedLabel"))
-        .and_then(|t| t.as_str())
-        .map(|t| t.trim().to_string())
-        .unwrap_or_default()
-}
-
-/// The `home` answer as shelves, in Spotify's order with Spotify's titles and subtitles.
-/// Sections without a title (the short-video row) and Recents are left out. Sections that repeat a
-/// title (Spotify sends several one-card "Made for you" and "For fans of ..." sections) are merged
-/// into one shelf. An answer without the sections, or with GraphQL errors, is an error.
-fn parse_home(body: &Value) -> Result<Vec<Shelf>, String> {
-    if has_errors(body) {
-        return Err("Spotify refused the Home request".to_string());
-    }
-    let sections = body
-        .pointer("/data/home/sectionContainer/sections/items")
-        .and_then(|s| s.as_array())
-        .ok_or_else(|| "Spotify's Home answer was not in the expected shape".to_string())?;
-    let mut shelves: Vec<Shelf> = Vec::new();
-    for section in sections {
-        let kind = section.pointer("/data/__typename").and_then(|k| k.as_str()).unwrap_or("");
-        if SKIPPED_SECTIONS.contains(&kind) {
-            continue;
-        }
-        let title = section_text(section, "title");
-        if title.is_empty() {
-            continue;
-        }
-        match shelves.iter().position(|s| s.title == title) {
-            Some(i) => push_cards(&mut shelves[i].cards, section.pointer("/sectionItems/items")),
-            None => {
-                let mut cards: Vec<ShelfCard> = Vec::new();
-                push_cards(&mut cards, section.pointer("/sectionItems/items"));
-                shelves.push(Shelf { title, subtitle: section_text(section, "subtitle"), cards });
-            }
-        }
-    }
-    shelves.retain(|s| !s.cards.is_empty());
-    shelves.truncate(HOME_SHELVES);
-    Ok(shelves)
-}
-
 /// A `homeSection` answer (one shelf) as a shelf: Spotify's own title (or `fallback`) and its cards
 /// in Spotify's order. An answer without the sections is an error rather than an empty shelf.
 fn parse_section(body: &Value, fallback: &str) -> Result<Shelf, String> {
@@ -1678,60 +1681,15 @@ mod shelf_tests {
 
     const A: &str = "1234567890123456789012";
     const B: &str = "2234567890123456789012";
-    const C: &str = "3234567890123456789012";
-
-    fn playlist(id: &str, name: &str) -> Value {
-        json!({"content":{"__typename":"PlaylistResponseWrapper","data":{"__typename":"Playlist",
-            "uri":format!("spotify:playlist:{id}"),"name":name,
-            "images":{"items":[{"sources":[{"url":"https://i.scdn.co/image/p","width":null}]}]},
-            "ownerV2":{"data":{"name":"Spotify"}}}}})
-    }
-
-    /// Mirrors the captured `home` answer: a title-less shorts row, generic shelves with and without
-    /// a subtitle, Recents, and one-card "baseline" sections that repeat a title.
-    fn home_body() -> Value {
-        json!({"data":{"home":{"sectionContainer":{"sections":{"items":[
-            {"data":{"__typename":"HomeShortsSectionData"},"sectionItems":{"items":[playlist(A,"short")]}},
-            {"data":{"__typename":"HomeGenericSectionData","subtitle":{"transformedLabel":""},"title":{"transformedLabel":"It's New Music Friday!"}},
-             "sectionItems":{"items":[playlist(A,"NMF Pakistan")]}},
-            {"data":{"__typename":"HomeGenericSectionData","subtitle":{"transformedLabel":"Brand new music from artists you love."},"title":{"transformedLabel":"Friday drops picked for you"}},
-             "sectionItems":{"items":[{"content":{"__typename":"AlbumResponseWrapper","data":{"__typename":"Album",
-                "uri":format!("spotify:album:{B}"),"name":"Party With The Boys",
-                "artists":{"items":[{"profile":{"name":"Don Toliver"}}]},
-                "coverArt":{"sources":[{"url":"https://i.scdn.co/image/a","width":300},{"url":"https://i.scdn.co/image/b","width":64}]}}}}]}},
-            {"data":{"__typename":"HomeRecentlyPlayedSectionData","title":{"transformedLabel":"Recents"}},"sectionItems":{"items":[playlist(C,"recent")]}},
-            {"data":{"__typename":"HomeFeedBaselineSectionData","title":{"transformedLabel":"Made for you"}},"sectionItems":{"items":[playlist(A,"Mix 1")]}},
-            {"data":{"__typename":"HomeFeedBaselineSectionData","title":{"transformedLabel":"Made for you"}},"sectionItems":{"items":[playlist(B,"Mix 2")]}},
-            {"data":{"__typename":"HomeFeedBaselineSectionData","title":{"transformedLabel":"Made for you"}},"sectionItems":{"items":[playlist(B,"Mix 2")]}}
-        ]}}}}})
-    }
 
     #[test]
-    fn home_keeps_spotifys_order_titles_and_subtitles() {
-        let shelves = parse_home(&home_body()).unwrap();
-        let titles: Vec<&str> = shelves.iter().map(|s| s.title.as_str()).collect();
-        assert_eq!(titles, ["It's New Music Friday!", "Friday drops picked for you", "Made for you"]);
-        assert_eq!(shelves[0].subtitle, "");
-        assert_eq!(shelves[1].subtitle, "Brand new music from artists you love.");
-        assert_eq!(shelves[1].cards[0].kind, ShelfKind::Album);
-        assert_eq!(shelves[1].cards[0].entry.sub, "Don Toliver");
-        assert_eq!(shelves[1].cards[0].entry.art.as_deref(), Some("https://i.scdn.co/image/a"));
-    }
-
-    #[test]
-    fn home_merges_repeated_titles_without_duplicates() {
-        let shelves = parse_home(&home_body()).unwrap();
-        let made = &shelves[2];
-        assert_eq!(made.cards.len(), 2);
-        assert_eq!(made.cards[0].entry.name, "Mix 1");
-        assert_eq!(made.cards[1].entry.name, "Mix 2");
-    }
-
-    #[test]
-    fn home_errors_and_wrong_shapes_are_failures() {
-        assert!(parse_home(&json!({"errors":[{"message":"no"}]})).is_err());
-        assert!(parse_home(&json!({"data":null})).is_err());
-        assert!(parse_home(&json!({"data":{"home":{}}})).is_err());
+    fn made_for_you_names_match_like_spotifast() {
+        assert!(made_for_you_name("Daily Mix", "Daily Mix 3"));
+        assert!(made_for_you_name("Daily Mix", "daily mix"));
+        assert!(made_for_you_name("Discover Weekly", "Discover Weekly"));
+        assert!(!made_for_you_name("Daily Mix", "Daily Mix Remixed"));
+        assert!(!made_for_you_name("Daily Mix", "Daily Mix "));
+        assert!(!made_for_you_name("Discover Weekly", "Discover Weekly 2"));
     }
 
     #[test]
@@ -1766,18 +1724,5 @@ mod shelf_tests {
         assert_eq!(shelf.cards.len(), 1);
         assert_eq!(shelf.cards[0].entry.name, "One");
         assert_eq!(shelf.cards[0].entry.sub, "By Spotify");
-    }
-}
-
-#[cfg(test)]
-mod uuid_tests {
-    use super::random_uuid;
-
-    #[test]
-    fn random_uuid_has_the_usual_shape() {
-        let u = random_uuid();
-        assert_eq!(u.len(), 36);
-        assert_eq!(u.matches('-').count(), 4);
-        assert_eq!(&u[14..15], "4");
     }
 }
