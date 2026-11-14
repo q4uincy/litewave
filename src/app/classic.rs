@@ -923,10 +923,11 @@ impl App {
                         if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !q.trim().is_empty() {
                             actions.push(Action::SpLink(q.trim().to_string()));
                         }
-                        ui.data_mut(|d| {
-                            d.insert_temp(qid, q);
-                            d.insert_temp(egui::Id::new("top_search_focus"), r.has_focus());
-                        });
+                        let top_focus = r.has_focus();
+ui.data_mut(|d| {
+    d.insert_temp(qid, q);
+    d.insert_temp(egui::Id::new("top_search_focus"), top_focus);
+});
                     }
                     // "Update ready" button on the right (only shown when an update is waiting).
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1033,7 +1034,8 @@ impl App {
                             sub,
                             mix(bg, text, 0.08),
                         );
-                        ctx.data_mut(|d| d.insert_temp(egui::Id::new("lib_search_focus"), lib_search.has_focus()));
+                        let lib_focus = lib_search.has_focus();
+ctx.data_mut(|d| d.insert_temp(egui::Id::new("lib_search_focus"), lib_focus));
                         ui.horizontal(|ui| {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let label = if alpha { "Alphabetical" } else { "Recents" };
