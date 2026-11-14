@@ -6,7 +6,7 @@ use super::widgets::{
     tint_for, HubIcon, Icon,
     ModeIcon,
 };
-use super::{buffering_text, fmt_time, loading_hint, Action, App, Dialog, View, BUG_URL};
+use super::{buffering_text, fmt_time, loading_hint, Action, App, Dialog, View};
 use crate::art::{self, ArtCache, ArtKey};
 use crate::config::{Repeat, ShuffleMode};
 use crate::library::Track;
