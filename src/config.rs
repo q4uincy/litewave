@@ -62,6 +62,8 @@ pub struct Config {
     pub recent_searches: Vec<String>,
     /// Check GitHub for a newer litewave when the app starts.
     pub auto_update_check: bool,
+    /// Download and install new versions automatically (Windows installer build).
+    pub auto_update_install: bool,
     /// Interface zoom (0.8 - 1.5).
     pub ui_scale: f32,
     /// Spotify streaming quality: 0 low (96 kbps), 1 normal (160), 2 high (320). Applies on the next connect.
@@ -107,6 +109,7 @@ impl Default for Config {
             spotify_connect: true,
             recent_searches: Vec::new(),
             auto_update_check: true,
+            auto_update_install: false,
             ui_scale: 1.0,
             spotify_quality: 1,
             spotify_normalise: true,
