@@ -39,6 +39,21 @@ fn is_made_for_you(name: &str) -> bool {
         || n.starts_with("this is ")
 }
 
+fn greeting() -> &'static str {
+    use chrono::Timelike;
+    match chrono::Local::now().hour() {
+        5..=11 => "Good morning",
+        12..=17 => "Good afternoon",
+        _ => "Good evening",
+    }
+}
+
+/// Spotify's own playlists (Daily Mix, Blends, Discover Weekly ...): owned by "Spotify", or
+/// recognised by name when the owner is not known.
+fn is_spotify_made(it: &Item) -> bool {
+    it.sub == "Spotify" || is_made_for_you(&it.label)
+}
+
 /// Where a tile or card leads.
 #[derive(Clone)]
 enum Click {
@@ -84,12 +99,12 @@ struct Card {
 fn cover(ui: &mut egui::Ui, rect: Rect, tex: Option<TextureId>, title: &str, rounding: Rounding) {
     match tex {
         Some(id) => {
-            ui.put(
-                rect,
-                egui::Image::new(SizedTexture::new(id, rect.size()))
-                    .fit_to_exact_size(rect.size())
-                    .rounding(rounding),
-            );
+            // Paint only: `ui.put` would move the layout cursor back to the end of the cover and
+            // make the next tile or card overlap this one.
+            egui::Image::new(SizedTexture::new(id, rect.size()))
+                .fit_to_exact_size(rect.size())
+                .rounding(rounding)
+                .paint_at(ui, rect);
         }
         None => {
             let p = ui.painter();
@@ -367,11 +382,12 @@ impl App {
             })
             .cloned()
             .collect();
-        let made: Vec<Item> = playlists.iter().filter(|it| is_made_for_you(&it.label)).cloned().collect();
+        let made: Vec<Item> = playlists.iter().filter(|it| is_spotify_made(it)).cloned().collect();
+        let own: Vec<Item> = playlists.iter().filter(|it| !is_spotify_made(it)).cloned().collect();
         let library: Vec<(&str, Option<Node>, Vec<Card>)> = vec![
             ("Recents", None, recent),
             ("Made for you", Some(Node::SpPlaylists), from_items(&made, "Made for you", false)),
-            ("Your playlists", Some(Node::SpPlaylists), from_items(&playlists, "Playlist", false)),
+            ("Your playlists", Some(Node::SpPlaylists), from_items(&own, "Playlist", false)),
             ("Your albums", Some(Node::SpAlbums), from_items(&albums, "Album", false)),
             ("Albums featuring songs you like", None, liked_albums),
             ("Your top mixes", Some(Node::SpPlaylists), from_items(&mixes, "Made for you", false)),
@@ -406,7 +422,9 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(TILE_GAP, TILE_GAP);
-                ui.add_space(8.0);
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(greeting()).size(26.0).strong().color(text));
+                ui.add_space(2.0);
                 let fid = egui::Id::new("home_filter");
                 let mut filter: u8 = ui.data(|d| d.get_temp::<u8>(fid)).unwrap_or(0);
                 ui.horizontal(|ui| {
