@@ -928,6 +928,10 @@ impl App {
                             d.insert_temp(egui::Id::new("top_search_focus"), r.has_focus());
                         });
                     }
+                    // "Update ready" button on the right (only shown when an update is waiting).
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        crate::update::pill(ui, accent);
+                    });
                 });
             });
 

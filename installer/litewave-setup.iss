@@ -48,9 +48,15 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
 ; After an in-app update (silent install) start litewave again
-Filename: "{app}\{#AppExe}"; Flags: nowait skipifnotsilent
+; (not after a quiet update that happened because litewave was closed: it passes /NOLAUNCH=1)
+Filename: "{app}\{#AppExe}"; Flags: nowait skipifnotsilent; Check: ShouldRelaunch
 
 [Code]
+function ShouldRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:NOLAUNCH|0}') <> '1';
+end;
+
 // On uninstall, offer to also remove settings, cache and the saved Spotify sign-in.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var

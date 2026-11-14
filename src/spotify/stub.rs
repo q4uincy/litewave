@@ -18,7 +18,9 @@ pub fn log_path() -> Option<PathBuf> {
     None
 }
 
-pub fn note(_msg: &str) {}
+pub fn note(msg: &str) {
+    crate::diag::note(msg);
+}
 
 pub fn status_note() -> String {
     String::new()

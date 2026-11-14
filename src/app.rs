@@ -724,10 +724,12 @@ impl App {
                     match engine {
                         Ok(e) => {
                             let device = e.has_connect();
+                            spotify::note("window: handing the engine to the player");
                             self.sp_session = Some(e.handle());
                             if let Some(p) = self.player.as_mut() {
                                 p.set_spotify(e);
                             }
+                            spotify::note("window: engine handed over");
                             self.sp_status = if device {
                                 "Connected. Browsing and playback are ready. litewave also shows up as a device in your Spotify apps."
                                     .to_string()
@@ -748,7 +750,9 @@ impl App {
                     self.cfg.spotify_browse_refresh = browse_refresh;
                     self.cfg_dirty = true;
                     self.shelves_next = None;
+                    spotify::note("window: refreshing the top shelves");
                     self.refresh_top();
+                    spotify::note("window: loading editable playlists");
                     self.load_editable();
                     spotify::note("window: sign-in result applied");
                     if self.sp_interactive {

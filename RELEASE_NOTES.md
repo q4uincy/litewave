@@ -1,4 +1,5 @@
 ## What's new
+- Calmer updates: new versions download quietly in the background and an "Update ready" button appears in the top bar (with what's new and Restart to update). If you put an update off a few times, it installs by itself when you close litewave. Turn it off in Settings > Updates
 - Spotify's own Home page: your real shelves in Spotify's order and wording (It's New Music Friday!, Friday drops picked for you, Recommended for today, Made For you, Albums featuring songs you like, Recommended Stations, More like ...). Unofficial: turn it off in Settings; if Spotify does not answer, Home looks as before
 - Signing in with your own Client ID now runs both Spotify approvals in one browser tab, with no "connected" page in between
 - Equalizer and a visualizer in the play bar

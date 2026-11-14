@@ -4,6 +4,7 @@ mod app;
 mod art;
 mod audio_tap;
 mod config;
+mod diag;
 mod eq;
 mod library;
 mod lyrics;
@@ -50,6 +51,7 @@ fn main() -> eframe::Result<()> {
         let bt = std::backtrace::Backtrace::force_capture();
         report(&format!("litewave crashed:\n{info}\n\n{bt}"));
     }));
+    diag::start();
     // Only one litewave window: a second start brings the first to the front and exits.
     if single::start().is_err() {
         return Ok(());
@@ -82,6 +84,8 @@ fn main() -> eframe::Result<()> {
             Box::new(|cc| Ok(Box::new(update::Root::new(cc)))),
         );
     }
+    // An update that has been waiting for a few starts installs itself now that litewave is closed.
+    update::install_on_exit();
     if let Err(e) = &res {
         report(&format!(
             "litewave could not start its window:\n{e}\n\n\

@@ -403,7 +403,11 @@ impl App {
                 &format!("litewave {}", env!("CARGO_PKG_VERSION")),
                 if st.is_empty() { "Check whether a newer version is out." } else { &st },
                 |ui| {
-                    if ui.button("Check for updates").clicked() {
+                    if crate::update::update_ready() {
+                        if ui.button("Restart to update").clicked() {
+                            crate::update::request_install();
+                        }
+                    } else if ui.button("Check for updates").clicked() {
                         crate::update::request_check();
                     }
                 },
@@ -431,9 +435,20 @@ impl App {
                 },
             );
             sep(ui);
+            row(
+                ui,
+                "Update automatically",
+                "Downloads updates in the background. If you put one off a few times, it installs when you close litewave (Windows).",
+                |ui| {
+                    if toggle(ui, &mut self.cfg.auto_update_install, accent).changed() {
+                        dirty = true;
+                    }
+                },
+            );
+            sep(ui);
             ui.label(
                 RichText::new(
-                    "\"Update now\" installs the new version and restarts litewave. It only works with the installer version; with the portable zip, download the new zip instead.",
+                    "When an update is ready, an \"Update ready\" button appears at the top of the window. It only works with the installer version; with the portable zip, download the new zip instead.",
                 )
                 .size(12.0)
                 .color(weak),

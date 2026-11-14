@@ -865,6 +865,7 @@ pub fn last_log() -> String {
 
 /// Writes one progress line to the playback log (Settings > Spotify > Help > open log). Never pass tokens.
 pub fn note(msg: &str) {
+    crate::diag::note(msg);
     init_logging();
     log::info!("litewave: {msg}");
 }

@@ -1,28 +1,44 @@
-//! One-click updates from GitHub releases.
+//! Updates from GitHub releases, the way Spotify does them: quiet and out of the way.
 //!
-//! On start (Windows only) litewave asks GitHub for the latest release. If it is newer than this
-//! build and has a `litewave-setup.exe`, a small "Update now" box appears. Clicking it downloads
-//! the installer, starts it silently and closes litewave; the installer replaces the files and
-//! starts litewave again.
+//! On Windows litewave looks for a newer release when it starts (and again every few hours while
+//! it runs). If there is one, the installer is downloaded in the background and nothing pops up.
+//! A small "Update ready" button appears in the top bar; clicking it shows what is new and a
+//! "Restart to update" button. If the update is put off a few times (3 starts, or a week), it is
+//! installed by itself the next time litewave is closed, so people never get stuck on an old
+//! version. "Update automatically" in Settings > Updates turns the background download and the
+//! automatic install off; the button then asks before it downloads anything.
 //!
-//! "What's new": the update box shows the release notes before updating, and the first start after
-//! an update opens a "What's new" window with the notes of the version that is now running.
-//! Settings > Updates has a button to read them again.
+//! "What's new": the first start after an update opens a "What's new" window with the notes of
+//! the version that is now running. Settings > Updates has a button to read them again.
 
-use std::io::Read;
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use eframe::egui;
+use eframe::egui::{Color32, RichText};
 
 const REPO: &str = "q4uincy/litewave";
 const ASSET: &str = "litewave-setup.exe";
+/// An update that was waiting on this many starts installs itself when litewave is closed ...
+const AUTO_AFTER_STARTS: u32 = 3;
+/// ... or when it has been waiting this long.
+const AUTO_AFTER_SECS: u64 = 7 * 24 * 3600;
+/// How often a running litewave looks for a new release.
+const RECHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
 
 static CHECK_REQUEST: AtomicBool = AtomicBool::new(false);
 static WHATS_NEW_REQUEST: AtomicBool = AtomicBool::new(false);
+static INSTALL_REQUEST: AtomicBool = AtomicBool::new(false);
+static POPUP_OPEN: AtomicBool = AtomicBool::new(false);
 static STATUS: Mutex<String> = Mutex::new(String::new());
+/// Text of the top bar button, or `None` when there is nothing to show.
+static PILL: Mutex<Option<String>> = Mutex::new(None);
+/// A downloaded installer that is waiting: (version, path).
+static READY: Mutex<Option<(String, PathBuf)>> = Mutex::new(None);
 
 /// Settings > Updates: ask for a check now (handled by `Root` on the next frame).
 pub fn request_check() {
@@ -36,6 +52,16 @@ pub fn request_whats_new() {
     WHATS_NEW_REQUEST.store(true, Ordering::SeqCst);
 }
 
+/// Settings > Updates: restart into the downloaded update (or download it first).
+pub fn request_install() {
+    INSTALL_REQUEST.store(true, Ordering::SeqCst);
+}
+
+/// An update is downloaded and ready to install.
+pub fn update_ready() -> bool {
+    READY.lock().map_or(false, |g| g.is_some())
+}
+
 /// The text shown under the "Check for updates" button.
 pub fn status() -> String {
     STATUS.lock().map(|s| s.clone()).unwrap_or_default()
@@ -47,26 +73,81 @@ fn set_status(s: &str) {
     }
 }
 
-/// (version, installer url, release notes)
-type Found = (String, String, String);
+fn set_pill(label: Option<&str>) {
+    if let Ok(mut g) = PILL.lock() {
+        *g = label.map(String::from);
+    }
+}
+
+fn pill_label() -> Option<String> {
+    PILL.lock().ok().and_then(|g| g.clone())
+}
+
+fn set_ready(v: Option<(String, PathBuf)>) {
+    if let Ok(mut g) = READY.lock() {
+        *g = v;
+    }
+}
+
+/// The small button in the top bar ("Update ready"). Draws nothing when there is no update.
+/// Clicking it opens or closes the details popup that `Root` draws right below it.
+pub fn pill(ui: &mut egui::Ui, accent: Color32) {
+    let Some(label) = pill_label() else { return };
+    let resp = ui.add(
+        egui::Button::new(RichText::new(format!("   {label}")).size(13.0).strong().color(accent))
+            .fill(accent.gamma_multiply(0.16))
+            .stroke(egui::Stroke::new(1.0, accent.gamma_multiply(0.55)))
+            .rounding(16.0)
+            .min_size(egui::vec2(0.0, 30.0)),
+    );
+    // The dot in front of the text.
+    ui.painter().circle_filled(resp.rect.left_center() + egui::vec2(15.0, 0.0), 3.5, accent);
+    ui.data_mut(|d| {
+        d.insert_temp(egui::Id::new("update_pill_rect"), resp.rect);
+        d.insert_temp(egui::Id::new("update_pill_accent"), accent);
+    });
+    if resp.clicked() {
+        POPUP_OPEN.fetch_xor(true, Ordering::SeqCst);
+    }
+    let _ = resp.on_hover_text("Click for details");
+}
+
+/// A release on GitHub that is newer than this build.
+#[derive(Clone)]
+struct Found {
+    version: String,
+    url: String,
+    notes: String,
+    /// Size of the installer in bytes (0 = unknown); used to check the download.
+    size: u64,
+}
+
+struct Ready {
+    version: String,
+    notes: String,
+    path: PathBuf,
+}
 
 enum Msg {
+    /// Result of "Check for updates" in Settings.
     Manual(Result<Option<Found>, String>),
-    Available { version: String, url: String, notes: String },
-    Downloaded(Result<(), String>),
+    /// The background check found a newer release.
+    Found(Found),
+    Downloaded { found: Found, result: Result<PathBuf, String> },
     /// Release notes of the running version. `manual` = asked for in Settings.
     WhatsNew { manual: bool, result: Result<(String, String), String> },
 }
 
 enum State {
     Idle,
-    Available { version: String, url: String, notes: String },
-    Downloading,
-    Failed(String),
-    Dismissed,
+    /// A newer release exists but "Update automatically" is off: nothing downloaded yet.
+    Available(Found),
+    /// `then_install`: the user already asked for the update, so restart as soon as it is here.
+    Downloading { version: String, then_install: bool },
+    Ready(Ready),
 }
 
-/// Wraps the real app and draws the update box on top of it.
+/// Wraps the real app and draws the update popup on top of it.
 pub struct Root {
     app: crate::app::App,
     state: State,
@@ -74,28 +155,36 @@ pub struct Root {
     rx: Receiver<Msg>,
     /// (version, notes) of the "What's new" window, if open.
     whats_new: Option<(String, String)>,
+    /// Last problem to show inside the popup (download or installer failed).
+    error: Option<String>,
+    /// The version that was already counted as "seen but not installed" in this run.
+    counted: Option<String>,
 }
 
 impl Root {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::single::watch(&cc.egui_ctx);
         let (tx, rx) = channel();
-        let mut state = State::Dismissed;
+        let current = env!("CARGO_PKG_VERSION");
         if cfg!(windows) {
-            state = State::Idle;
-        }
-        if cfg!(windows) && crate::config::Config::load().auto_update_check {
+            clean_old_installers(current);
             let tx = tx.clone();
             let ctx = cc.egui_ctx.clone();
             std::thread::spawn(move || {
-                if let Some(msg) = check() {
-                    let _ = tx.send(msg);
-                    ctx.request_repaint();
+                loop {
+                    if crate::config::Config::load().auto_update_check {
+                        if let Some(msg) = check() {
+                            if tx.send(msg).is_err() {
+                                break;
+                            }
+                            ctx.request_repaint();
+                        }
+                    }
+                    std::thread::sleep(RECHECK_EVERY);
                 }
             });
         }
         // First start after an update: show what changed in this version (once).
-        let current = env!("CARGO_PKG_VERSION");
         let last = state_file("seen_version.txt")
             .and_then(|f| std::fs::read_to_string(f).ok())
             .unwrap_or_default();
@@ -113,10 +202,87 @@ impl Root {
         } else if is_newer(last, current) {
             write_state("seen_version.txt", current); // downgraded: keep in step
         }
-        Self { app: crate::app::App::new(cc), state, tx, rx, whats_new: None }
+        Self {
+            app: crate::app::App::new(cc),
+            state: State::Idle,
+            tx,
+            rx,
+            whats_new: None,
+            error: None,
+            counted: None,
+        }
     }
 
-    fn show_update_box(&mut self, ctx: &egui::Context) {
+    /// Starts the background download of `found`.
+    fn start_download(&mut self, ctx: &egui::Context, found: Found, then_install: bool) {
+        set_status(&format!("Downloading litewave {} in the background...", found.version));
+        self.error = None;
+        self.state = State::Downloading { version: found.version.clone(), then_install };
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let result = download(&found);
+            let _ = tx.send(Msg::Downloaded { found, result });
+            ctx.request_repaint();
+        });
+    }
+
+    /// A newer release was found (by the background check or by "Check for updates").
+    fn on_found(&mut self, ctx: &egui::Context, found: Found) {
+        if matches!(self.state, State::Idle) {
+            if self.counted.as_deref() != Some(found.version.as_str()) {
+                note_pending(&found.version);
+                self.counted = Some(found.version.clone());
+            }
+            if crate::config::Config::load().auto_update_install {
+                self.start_download(ctx, found, false);
+            } else {
+                set_status(&format!("litewave {} is available.", found.version));
+                self.state = State::Available(found);
+            }
+            return;
+        }
+        let text = match &self.state {
+            State::Ready(r) => format!("litewave {} is ready. Restart to update.", r.version),
+            State::Downloading { version, .. } => {
+                format!("Downloading litewave {version} in the background...")
+            }
+            State::Available(f) => format!("litewave {} is available.", f.version),
+            State::Idle => return,
+        };
+        set_status(&text);
+    }
+
+    /// "Restart to update" / "Download and restart".
+    fn install_clicked(&mut self, ctx: &egui::Context) {
+        if matches!(self.state, State::Ready(_)) {
+            self.install_now(ctx);
+            return;
+        }
+        let found = if let State::Available(f) = &self.state { Some(f.clone()) } else { None };
+        if let Some(f) = found {
+            self.start_download(ctx, f, true);
+        }
+    }
+
+    /// Starts the downloaded installer and closes litewave; the installer starts it again.
+    fn install_now(&mut self, ctx: &egui::Context) {
+        let (path, version) = match &self.state {
+            State::Ready(r) => (r.path.clone(), r.version.clone()),
+            _ => return,
+        };
+        match run_installer(&path, &version, true) {
+            Ok(()) => {
+                set_ready(None);
+                POPUP_OPEN.store(false, Ordering::SeqCst);
+                crate::tray::QUITTING.store(true, Ordering::SeqCst);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    fn show_updates(&mut self, ctx: &egui::Context) {
         if CHECK_REQUEST.swap(false, Ordering::SeqCst) {
             let tx = self.tx.clone();
             let ctx = ctx.clone();
@@ -133,6 +299,9 @@ impl Root {
                 let _ = tx.send(Msg::WhatsNew { manual: true, result });
                 ctx.request_repaint();
             });
+        }
+        if INSTALL_REQUEST.swap(false, Ordering::SeqCst) {
+            self.install_clicked(ctx);
         }
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
@@ -155,97 +324,170 @@ impl Root {
                         }
                     }
                 },
-                Msg::Available { version, url, notes } => {
+                Msg::Found(found) => self.on_found(ctx, found),
+                Msg::Manual(Ok(Some(found))) => {
+                    if cfg!(windows) {
+                        self.on_found(ctx, found);
+                    } else {
+                        set_status(&format!("litewave {} is available. Download it from the releases page.", found.version));
+                    }
+                }
+                Msg::Manual(Ok(None)) => {
                     if matches!(self.state, State::Idle) {
-                        self.state = State::Available { version, url, notes };
+                        set_status("You're up to date.");
                     }
                 }
-                Msg::Manual(Ok(Some((version, url, notes)))) => {
-                    set_status(&format!("litewave {version} is available."));
-                    if cfg!(windows) && !matches!(self.state, State::Downloading) {
-                        self.state = State::Available { version, url, notes };
-                    }
-                }
-                Msg::Manual(Ok(None)) => set_status("You're up to date."),
                 Msg::Manual(Err(e)) => set_status(&e),
-                Msg::Downloaded(Ok(())) => {
-                    crate::tray::QUITTING.store(true, Ordering::SeqCst);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                Msg::Downloaded { found, result } => {
+                    let then_install =
+                        matches!(self.state, State::Downloading { then_install: true, .. });
+                    match result {
+                        Ok(path) => {
+                            set_ready(Some((found.version.clone(), path.clone())));
+                            set_status(&format!("litewave {} is ready. Restart to update.", found.version));
+                            self.state = State::Ready(Ready {
+                                version: found.version,
+                                notes: found.notes,
+                                path,
+                            });
+                            if then_install {
+                                self.install_now(ctx);
+                            }
+                        }
+                        Err(e) => {
+                            set_status(&e);
+                            if then_install {
+                                // The user asked for it: keep the button and say what went wrong.
+                                self.error = Some(e);
+                                self.state = State::Available(found);
+                            } else {
+                                // Quiet background failure: try again at the next check.
+                                self.state = State::Idle;
+                            }
+                        }
+                    }
                 }
-                Msg::Downloaded(Err(e)) => self.state = State::Failed(e),
             }
         }
         self.show_whats_new(ctx);
-        if matches!(self.state, State::Idle | State::Dismissed) {
+
+        let label = match &self.state {
+            State::Ready(_) => Some("Update ready"),
+            State::Available(_) => Some("Update available"),
+            State::Downloading { then_install: true, .. } => Some("Updating..."),
+            _ => None,
+        };
+        set_pill(label);
+        if label.is_none() {
+            POPUP_OPEN.store(false, Ordering::SeqCst);
+        }
+        self.show_popup(ctx);
+    }
+
+    /// The details popup, right under the top bar button.
+    fn show_popup(&mut self, ctx: &egui::Context) {
+        if !POPUP_OPEN.load(Ordering::SeqCst) {
             return;
         }
+        let (title, sub, notes, button) = match &self.state {
+            State::Ready(r) => (
+                format!("litewave {} is ready", r.version),
+                "It was downloaded in the background. litewave closes and opens again, it only takes a moment.",
+                r.notes.clone(),
+                Some("Restart to update"),
+            ),
+            State::Available(f) => (
+                format!("litewave {} is available", f.version),
+                "Download it now; litewave then closes and opens again.",
+                f.notes.clone(),
+                Some("Download and restart"),
+            ),
+            State::Downloading { version, .. } => (
+                format!("Updating to litewave {version}"),
+                "litewave restarts as soon as the download is done.",
+                String::new(),
+                None,
+            ),
+            State::Idle => return,
+        };
+        let downloading = matches!(self.state, State::Downloading { .. });
+        let pill_rect: Option<egui::Rect> = ctx.data(|d| d.get_temp(egui::Id::new("update_pill_rect")));
+        let accent: Color32 = ctx
+            .data(|d| d.get_temp(egui::Id::new("update_pill_accent")))
+            .unwrap_or(Color32::from_rgb(30, 215, 96));
+        let on_accent = {
+            let lum = 0.299 * accent.r() as f32 + 0.587 * accent.g() as f32 + 0.114 * accent.b() as f32;
+            if lum > 150.0 { Color32::BLACK } else { Color32::WHITE }
+        };
 
-        let mut start: Option<(String, String)> = None;
-        let mut dismiss = false;
-        let mut later: Option<String> = None;
-        let mut skip: Option<String> = None;
-        egui::Area::new(egui::Id::new("litewave_update_box"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -14.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width(300.0);
-                    match &self.state {
-                        State::Available { version, url, notes } => {
-                            ui.label(format!("litewave {version} is available"));
-                            if !notes.trim().is_empty() {
-                                ui.collapsing("What's new", |ui| {
-                                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                                        show_notes(ui, notes);
-                                    });
-                                });
-                            }
-                            ui.horizontal(|ui| {
-                                if ui.button("Update now").clicked() {
-                                    start = Some((url.clone(), version.clone()));
-                                }
-                                if ui.button("Later").clicked() {
-                                    later = Some(version.clone());
-                                }
-                                if ui.button("Skip this version").clicked() {
-                                    skip = Some(version.clone());
-                                }
-                            });
+        let mut area = egui::Area::new(egui::Id::new("litewave_update_popup")).order(egui::Order::Foreground);
+        area = match pill_rect {
+            Some(r) => area
+                .pivot(egui::Align2::RIGHT_TOP)
+                .fixed_pos(egui::pos2(r.right(), r.bottom() + 6.0)),
+            None => area.anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 58.0)),
+        };
+        let mut install = false;
+        let mut close = false;
+        let shown = area.show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(310.0);
+                ui.label(RichText::new(&title).strong().size(15.0));
+                ui.add_space(2.0);
+                ui.label(RichText::new(sub).size(12.5).weak());
+                if !notes.trim().is_empty() {
+                    ui.add_space(6.0);
+                    egui::CollapsingHeader::new("What's new").default_open(true).show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                            show_notes(ui, &notes);
+                        });
+                    });
+                }
+                if let Some(e) = &self.error {
+                    ui.add_space(6.0);
+                    ui.colored_label(Color32::from_rgb(235, 100, 100), e.as_str());
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if downloading {
+                        ui.spinner();
+                        ui.label("Downloading...");
+                    }
+                    if let Some(b) = button {
+                        let btn = egui::Button::new(RichText::new(b).strong().color(on_accent))
+                            .fill(accent)
+                            .rounding(14.0)
+                            .min_size(egui::vec2(0.0, 30.0));
+                        if ui.add(btn).clicked() {
+                            install = true;
                         }
-                        State::Downloading => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Downloading the update...");
-                            });
-                        }
-                        State::Failed(e) => {
-                            ui.label(e.as_str());
-                            if ui.button("Dismiss").clicked() {
-                                dismiss = true;
-                            }
-                        }
-                        _ => {}
+                    }
+                    if ui
+                        .add(egui::Button::new("Later").rounding(14.0).min_size(egui::vec2(0.0, 30.0)))
+                        .clicked()
+                    {
+                        close = true;
                     }
                 });
             });
-
-        if let Some(v) = later {
-            snooze_version(&v);
-            self.state = State::Dismissed;
-        } else if let Some(v) = skip {
-            skip_version(&v);
-            self.state = State::Dismissed;
-        } else if let Some((url, version)) = start {
-            self.state = State::Downloading;
-            let tx = self.tx.clone();
-            let ctx = ctx.clone();
-            std::thread::spawn(move || {
-                let result = download_and_run(&url, &version);
-                let _ = tx.send(Msg::Downloaded(result));
-                ctx.request_repaint();
-            });
-        } else if dismiss {
-            self.state = State::Dismissed;
+        });
+        // Click anywhere else (not on the button that opened it) or press Esc to close.
+        let rect = shown.response.rect;
+        if ctx.input(|i| i.pointer.any_pressed()) {
+            if let Some(p) = ctx.input(|i| i.pointer.interact_pos()) {
+                if !rect.contains(p) && !pill_rect.map_or(false, |r| r.contains(p)) {
+                    close = true;
+                }
+            }
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            close = true;
+        }
+        if install {
+            self.install_clicked(ctx);
+        }
+        if close {
+            POPUP_OPEN.store(false, Ordering::SeqCst);
         }
     }
 }
@@ -288,9 +530,25 @@ impl eframe::App for Root {
         if !files.is_empty() {
             self.app.open_paths(files);
         }
+        crate::diag::frame();
+        // One frame a second at least, so a window that stops drawing can be told from an idle one.
+        ctx.request_repaint_after(Duration::from_secs(1));
         self.app.update(ctx, frame);
-        self.show_update_box(ctx);
+        self.show_updates(ctx);
     }
+}
+
+/// Called by `main` after the window has closed: if an update has been waiting for a few starts
+/// (or a week), install it now, without opening litewave again. Does nothing otherwise.
+pub fn install_on_exit() {
+    if !cfg!(windows) {
+        return;
+    }
+    let Some((version, path)) = READY.lock().ok().and_then(|g| g.clone()) else { return };
+    if !crate::config::Config::load().auto_update_install || !auto_due(&version) {
+        return;
+    }
+    let _ = run_installer(&path, &version, false);
 }
 
 /// Turns a GitHub release body into plain, readable lines: bullets instead of `*`, no
@@ -365,20 +623,7 @@ fn is_newer(latest: &str, current: &str) -> bool {
     parse_version(latest) > parse_version(current)
 }
 
-fn skip_file() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|d| d.join("litewave").join("skipped_update.txt"))
-}
-
-fn skip_version(version: &str) {
-    if let Some(f) = skip_file() {
-        if let Some(dir) = f.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(f, version);
-    }
-}
-
-fn state_file(name: &str) -> Option<std::path::PathBuf> {
+fn state_file(name: &str) -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("litewave").join(name))
 }
 
@@ -397,19 +642,57 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// "Later": do not ask again about this version for a day.
-fn snooze_version(version: &str) {
-    write_state("snoozed_update.txt", &format!("{version}\n{}", now_secs() + 24 * 3600));
-}
-
-fn snoozed(version: &str) -> bool {
-    let text = state_file("snoozed_update.txt")
+/// (starts, first seen) for the update that is waiting; (0, 0) if it is a different version.
+fn read_pending(version: &str) -> (u32, u64) {
+    let text = state_file("update_pending.txt")
         .and_then(|f| std::fs::read_to_string(f).ok())
         .unwrap_or_default();
     let mut lines = text.lines();
-    let v = lines.next().unwrap_or("").trim();
-    let until: u64 = lines.next().and_then(|x| x.trim().parse().ok()).unwrap_or(0);
-    v == version && now_secs() < until
+    if lines.next().unwrap_or("").trim() != version {
+        return (0, 0);
+    }
+    let starts = lines.next().and_then(|x| x.trim().parse().ok()).unwrap_or(0);
+    let first = lines.next().and_then(|x| x.trim().parse().ok()).unwrap_or(0);
+    (starts, first)
+}
+
+/// Counts one more start in which this update was waiting and not installed.
+fn note_pending(version: &str) {
+    let (starts, first) = read_pending(version);
+    let first = if starts == 0 { now_secs() } else { first };
+    write_state("update_pending.txt", &format!("{version}\n{}\n{first}", starts + 1));
+}
+
+/// Has the update waited long enough to install itself?
+fn auto_due(version: &str) -> bool {
+    let (starts, first) = read_pending(version);
+    starts >= AUTO_AFTER_STARTS
+        || (starts > 0 && now_secs().saturating_sub(first) >= AUTO_AFTER_SECS)
+}
+
+fn update_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("litewave").join("update"))
+}
+
+fn installer_path(version: &str) -> Option<PathBuf> {
+    update_dir().map(|d| d.join(format!("litewave-setup-{version}.exe")))
+}
+
+/// Deletes downloaded installers that are not newer than the running version, and half-finished
+/// downloads.
+fn clean_old_installers(current: &str) {
+    let Some(dir) = update_dir() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let keep = name
+            .strip_prefix("litewave-setup-")
+            .and_then(|n| n.strip_suffix(".exe"))
+            .map_or(false, |v| is_newer(v, current));
+        if !keep {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// The installer for this version was already started. If the app still reports an older version
@@ -421,11 +704,10 @@ fn already_installed(version: &str) -> bool {
 }
 
 fn check() -> Option<Msg> {
-    let (version, url, notes) = fetch(false).ok().flatten()?;
-    Some(Msg::Available { version, url, notes })
+    fetch(false).ok().flatten().map(Msg::Found)
 }
 
-/// Asks GitHub for the latest release. `Ok(None)` = nothing newer (or skipped, unless `manual`).
+/// Asks GitHub for the latest release. `Ok(None)` = nothing newer (or already installed, unless `manual`).
 fn fetch(manual: bool) -> Result<Option<Found>, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
@@ -443,50 +725,75 @@ fn fetch(manual: bool) -> Result<Option<Found>, String> {
         return Ok(None);
     }
     let version = tag.trim_start_matches('v').to_string();
-    let skipped = skip_file().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
-    if !manual && (skipped.trim() == version || snoozed(&version) || already_installed(&version)) {
+    if !manual && already_installed(&version) {
         return Ok(None);
     }
     let notes = clean_notes(release["body"].as_str().unwrap_or(""));
-    let url = release["assets"]
+    let asset = release["assets"]
         .as_array()
-        .and_then(|a| a.iter().find(|a| a["name"].as_str() == Some(ASSET)))
-        .and_then(|a| a["browser_download_url"].as_str())
-        .map(String::from);
+        .and_then(|a| a.iter().find(|a| a["name"].as_str() == Some(ASSET)));
+    let url = asset.and_then(|a| a["browser_download_url"].as_str()).map(String::from);
+    let size = asset.and_then(|a| a["size"].as_u64()).unwrap_or(0);
     match url {
-        Some(url) => Ok(Some((version, url, notes))),
+        Some(url) => Ok(Some(Found { version, url, notes, size })),
         None => Err(format!("litewave {version} is out, but its installer is not uploaded yet.")),
     }
 }
 
-fn download_and_run(url: &str, version: &str) -> Result<(), String> {
+/// Downloads the installer into litewave's update folder. An installer that was already
+/// downloaded earlier (same size) is reused.
+fn download(found: &Found) -> Result<PathBuf, String> {
     // Only ever run an installer that was downloaded from this project's own releases.
     let allowed = format!("https://github.com/{REPO}/releases/download/");
-    if !url.starts_with(&allowed) {
+    if !found.url.starts_with(&allowed) {
         return Err("The update link is not from the litewave releases page.".into());
     }
+    let dest = installer_path(&found.version).ok_or("There is no place to save the update.")?;
+    if found.size > 0 && std::fs::metadata(&dest).map_or(false, |m| m.len() == found.size) {
+        return Ok(dest);
+    }
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not save the update: {e}"))?;
+    }
+    let part = dest.with_extension("part");
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(15))
         .timeout_read(Duration::from_secs(60))
         .user_agent(concat!("litewave/", env!("CARGO_PKG_VERSION")))
         .build();
-    let resp = agent.get(url).call().map_err(|e| format!("Download failed: {e}"))?;
-    let path = std::env::temp_dir().join(ASSET);
-    let mut file = std::fs::File::create(&path).map_err(|e| format!("Could not save the update: {e}"))?;
+    let resp = agent.get(&found.url).call().map_err(|e| format!("Download failed: {e}"))?;
+    let mut file = std::fs::File::create(&part).map_err(|e| format!("Could not save the update: {e}"))?;
     let mut reader = resp.into_reader();
     let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
     loop {
         let n = reader.read(&mut buf).map_err(|e| format!("Download failed: {e}"))?;
         if n == 0 {
             break;
         }
-        std::io::Write::write_all(&mut file, &buf[..n]).map_err(|e| format!("Could not save the update: {e}"))?;
+        file.write_all(&buf[..n]).map_err(|e| format!("Could not save the update: {e}"))?;
+        total += n as u64;
     }
+    file.flush().map_err(|e| format!("Could not save the update: {e}"))?;
     drop(file);
-    std::process::Command::new(&path)
-        .args(["/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS"])
-        .spawn()
-        .map_err(|e| format!("Could not start the installer: {e}"))?;
+    // A cut-off download must never be run.
+    if (found.size > 0 && total != found.size) || total < 100_000 {
+        let _ = std::fs::remove_file(&part);
+        return Err("The download was incomplete. litewave will try again later.".into());
+    }
+    std::fs::rename(&part, &dest).map_err(|e| format!("Could not save the update: {e}"))?;
+    Ok(dest)
+}
+
+/// Starts the installer. `relaunch`: the installer opens litewave again when it is done
+/// (restart now); without it the update happens quietly after litewave was closed.
+fn run_installer(path: &std::path::Path, version: &str, relaunch: bool) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(path);
+    cmd.args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/NORESTART"]);
+    if !relaunch {
+        cmd.arg("/NOLAUNCH=1");
+    }
+    cmd.spawn().map_err(|e| format!("Could not start the installer: {e}"))?;
     write_state("installed_update.txt", version);
     Ok(())
 }
