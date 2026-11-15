@@ -1,5 +1,12 @@
 ## What's new
-- New full-screen lyrics: big synced lyrics next to the cover, with the queue beside it. Open it with the arrows button in the play bar, leave with Esc
+- Full-screen lyrics, Spotify style: the cover with the title and artist on the left, big synced lyrics on the right, and the cover's colours blurred behind. Open it with the expand button in the play bar, close it with Esc or the corner button
+- Smoother lyrics: the scroll glides to the current line, the current line grows and fades into the accent colour, lines fade out at the top and bottom, the mouse wheel scrolls by hand until the next line, and a click on a line jumps to it
+- Lyrics are looked up as soon as a song starts, so they are ready when you open them (found lyrics are kept on disk)
+- Sidebar redone in the Spotify desktop style: Home and Search at the top with icons, a Library header with search and + buttons, a "Recently played" sort pill and a "By You" pill. Liked Songs is pinned with a pin icon. iPod mode and Lyrics moved under On this PC
+- Library "Recently played" now follows your real Spotify listening history instead of the saved library order. Home tiles and shelves use the same order
+- New Home shelves: Recently played and Your top artists
+- Home explains why Made for you could not load (needs the playback sign-in, or see the log)
+- Spotify sign-in now asks for two more permissions (recently played and top artists). Sign out and sign in again once to get the new shelves and the new order
 - Right-click menu redone with icons and groups, plus Go to artist, Go to album, Copy link, Copy details and Open on the web
 - Song lists have Date added and heart columns; click the heart to like or unlike
 - Play bar: mute button next to the volume slider
