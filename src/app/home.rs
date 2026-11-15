@@ -662,8 +662,7 @@ impl App {
                         // The newest "home shelves" line of the log says what went wrong.
                         let log = crate::spotify::last_log();
                         let line = log
-                            .split("  |  ")
-                            .rev()
+                            .rsplit("  |  ")
                             .find(|l| l.contains("home shelves"))
                             .unwrap_or("Spotify did not answer")
                             .replace("home shelves: ", "");
