@@ -983,6 +983,19 @@ pub fn last_log() -> String {
 pub fn note(msg: &str) {
     init_logging();
     log::info!("litewave: {msg}");
+    // Keep the newest Home-shelves failure on its own: the 5-line log above is soon full of playback chatter.
+    if msg.starts_with("home shelves") && !msg.contains(" cards") && !msg.contains("found by search") {
+        if let Ok(mut l) = LAST_SHELVES_NOTE.lock() {
+            *l = msg.to_string();
+        }
+    }
+}
+
+static LAST_SHELVES_NOTE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Why Spotify's Home shelves last failed (empty if nothing was noted).
+pub fn last_shelves_note() -> String {
+    LAST_SHELVES_NOTE.lock().map(|l| l.clone()).unwrap_or_default()
 }
 
 fn init_logging() {
