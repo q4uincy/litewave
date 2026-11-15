@@ -1,7 +1,7 @@
 //! Cover art: loaded on worker threads, decoded to small square textures, and kept in a small
 //! cache so memory stays low (a 80x80 cover is about 25 KB, a 256x256 one about 256 KB).
 
-use eframe::egui::{self, ColorImage, TextureHandle, TextureId, TextureOptions};
+use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureId, TextureOptions};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
@@ -41,6 +41,8 @@ type Loaded = (Slot, Option<ColorImage>);
 
 pub struct ArtCache {
     textures: HashMap<Slot, TextureHandle>,
+    /// Dominant colour of each loaded cover (the player bar is tinted with it).
+    tints: HashMap<Slot, Color32>,
     order: VecDeque<Slot>,
     pending: HashSet<Slot>,
     failed: HashMap<Slot, (std::time::Instant, u8)>,
@@ -55,6 +57,7 @@ impl ArtCache {
         let (tx, rx) = channel();
         Self {
             textures: HashMap::new(),
+            tints: HashMap::new(),
             order: VecDeque::new(),
             pending: HashSet::new(),
             failed: HashMap::new(),
@@ -71,6 +74,9 @@ impl ArtCache {
             self.pending.remove(&slot);
             match img {
                 Some(img) => {
+                    if let Some(c) = avg_tint(&img) {
+                        self.tints.insert(slot.clone(), c);
+                    }
                     self.counter += 1;
                     let handle = ctx.load_texture(
                         format!("art{}", self.counter),
@@ -82,6 +88,7 @@ impl ArtCache {
                     while self.order.len() > MAX_ENTRIES {
                         if let Some(old) = self.order.pop_front() {
                             self.textures.remove(&old);
+                            self.tints.remove(&old);
                         }
                     }
                 }
@@ -91,6 +98,11 @@ impl ArtCache {
                 }
             }
         }
+    }
+
+    /// Dominant colour of a cover that is already loaded (None until it is).
+    pub fn tint(&self, key: &ArtKey, size: u32) -> Option<Color32> {
+        self.tints.get(&(key.clone(), size)).copied()
     }
 
     /// Returns the texture if it is ready; otherwise starts loading it and returns None.
@@ -189,4 +201,24 @@ fn fetch_url(url: &str) -> Option<Vec<u8>> {
         .read_to_end(&mut buf)
         .ok()?;
     Some(buf)
+}
+
+/// The cover's main colour: an average that favours bright, saturated pixels over grey ones.
+fn avg_tint(img: &ColorImage) -> Option<Color32> {
+    let (mut r, mut g, mut b, mut w) = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+    for px in img.pixels.iter().step_by(3) {
+        let (pr, pg, pb) = (px.r() as f32, px.g() as f32, px.b() as f32);
+        let mx = pr.max(pg).max(pb);
+        let mn = pr.min(pg).min(pb);
+        let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+        let wt = 0.05 + sat * (mx / 255.0);
+        r += pr * wt;
+        g += pg * wt;
+        b += pb * wt;
+        w += wt;
+    }
+    if w <= 0.0 {
+        return None;
+    }
+    Some(Color32::from_rgb((r / w) as u8, (g / w) as u8, (b / w) as u8))
 }
