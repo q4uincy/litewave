@@ -259,9 +259,17 @@ impl App {
         }
         // Spotify's own shelves (read quietly in the background; nothing is shown until they arrive).
         self.want_shelves();
+        self.want_recent();
         let base = ui.visuals().panel_fill;
-        let playlists = self.cached_items("SpPlaylists");
-        let albums = self.cached_items("SpAlbums");
+        let mut playlists = self.cached_items("SpPlaylists");
+        let mut albums = self.cached_items("SpAlbums");
+        // Spotify shows what you played last first; the sort is stable, so the rest keeps its order.
+        let rank = |it: &Item| match &it.kind {
+            Kind::Open(n) => self.recent_rank(n),
+            _ => usize::MAX,
+        };
+        playlists.sort_by_key(|it| rank(it));
+        albums.sort_by_key(|it| rank(it));
         let artists = self.cached_items("SpArtists");
         let shows = self.cached_items("SpShows");
 
@@ -383,6 +391,24 @@ impl App {
             .collect();
         let made: Vec<Item> = playlists.iter().filter(|it| is_spotify_made(it)).cloned().collect();
         let own: Vec<Item> = playlists.iter().filter(|it| !is_spotify_made(it)).cloned().collect();
+        let entry_cards = |list: &[crate::spotify::Entry], album: bool| -> Vec<Card> {
+            list.iter()
+                .take(per_row)
+                .map(|e| Card {
+                    title: e.name.clone(),
+                    sub: e.sub.clone(),
+                    art: e.art.clone().map(ArtKey::Url),
+                    circle: !album,
+                    go: Click::Open(if album {
+                        Node::SpAlbum(e.id.clone(), e.name.clone())
+                    } else {
+                        Node::SpArtist(e.id.clone(), e.name.clone())
+                    }),
+                })
+                .collect()
+        };
+        let recent_albums = entry_cards(&self.sp_recent_albums, true);
+        let top_artists = entry_cards(&self.sp_top_artists, false);
         let library: Vec<(&str, Option<Node>, Vec<Card>)> = vec![
             ("Recents", None, recent),
             ("Made for you", Some(Node::SpPlaylists), from_items(&made, "Made for you", false)),
@@ -390,6 +416,8 @@ impl App {
             ("Your albums", Some(Node::SpAlbums), from_items(&albums, "Album", false)),
             ("Albums featuring songs you like", None, liked_albums),
             ("Your top mixes", Some(Node::SpPlaylists), from_items(&mixes, "Made for you", false)),
+            ("Recently played", None, recent_albums),
+            ("Your top artists", None, top_artists),
             ("Your artists", Some(Node::SpArtists), from_items(&artists, "Artist", true)),
             ("Your podcasts", Some(Node::SpShows), from_items(&shows, "Podcast", false)),
         ];
@@ -439,6 +467,18 @@ impl App {
                     }
                 });
                 ui.data_mut(|d| d.insert_temp(fid, filter));
+                if self.cfg.home_shelves && self.sp.is_some() && self.sp_shelves.is_none() && !self.shelves_busy {
+                    let why = if self.sp_session.is_none() {
+                        "Made for you needs the playback sign-in (Premium). Sign in again under Spotify account."
+                    } else if self.shelves_next.is_some() {
+                        "Made for you could not load. The reason is in Settings > Help > open log (lines starting with \"home shelves\")."
+                    } else {
+                        ""
+                    };
+                    if !why.is_empty() {
+                        ui.label(egui::RichText::new(why).size(12.0).color(sub));
+                    }
+                }
                 ui.add_space(6.0);
 
                 let w = ((ui.available_width() - TILE_GAP * (cols as f32 - 1.0)) / cols as f32).max(80.0);

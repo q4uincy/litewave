@@ -137,6 +137,8 @@ pub enum SpMsg {
     Remote(String, Result<Track, String>),
     /// Spotify's own Home shelves. `Err` holds the seconds Spotify asked us to wait (0 = none).
     Shelves(Result<Vec<spotify::Shelf>, u64>),
+    /// Ids of the playlists / albums / artists played from lately, newest first.
+    RecentCtx(Result<(Vec<String>, Vec<spotify::Entry>, Vec<spotify::Entry>), String>),
 }
 
 /// Results from the theme gallery threads.
@@ -264,6 +266,12 @@ pub struct App {
     shelves_next: Option<Instant>,
     /// A shelves request is running.
     shelves_busy: bool,
+    /// Spotify's recently played contexts (newest first) and when they were read.
+    pub(crate) sp_recent: Option<(Instant, Vec<String>)>,
+    recent_busy: bool,
+    /// Albums of Spotify's recently played songs, and your top artists (Home shelves).
+    pub(crate) sp_recent_albums: Vec<spotify::Entry>,
+    pub(crate) sp_top_artists: Vec<spotify::Entry>,
     /// Which tab of the queue panel is shown: false = Queue, true = Recent.
     pub(crate) queue_recent_tab: bool,
     /// When the sidebar last asked for the playlist list (so a failed load is not retried every frame).
@@ -396,6 +404,10 @@ impl App {
             sp_shelves: None,
             shelves_next: None,
             shelves_busy: false,
+            sp_recent: None,
+            recent_busy: false,
+            sp_recent_albums: Vec::new(),
+            sp_top_artists: Vec::new(),
             queue_recent_tab: false,
             list_fetch: HashMap::new(),
             home_back: None,
@@ -783,6 +795,19 @@ impl App {
                         }
                     }
                 }
+                SpMsg::RecentCtx(res) => {
+                    self.recent_busy = false;
+                    // On failure (e.g. signed in before the permission existed) keep the old order,
+                    // but remember the try so it is not repeated every frame.
+                    let (ids, albums, top) = res.unwrap_or_default();
+                    self.sp_recent = Some((Instant::now(), ids));
+                    if !albums.is_empty() {
+                        self.sp_recent_albums = albums;
+                    }
+                    if !top.is_empty() {
+                        self.sp_top_artists = top;
+                    }
+                }
                 SpMsg::Editable(Err(_)) => {}
                 SpMsg::Done(res, reload) => {
                     match res {
@@ -867,6 +892,40 @@ impl App {
         }
         self.list_fetch.insert(key, Instant::now());
         self.spawn_fetch(node);
+    }
+
+    /// Reads Spotify's recently played list (at most every 5 minutes). Safe to call every frame.
+    pub(crate) fn want_recent(&mut self) {
+        let Some(client) = self.sp.clone() else { return };
+        let fresh = self
+            .sp_recent
+            .as_ref()
+            .map_or(false, |(at, _)| at.elapsed() < Duration::from_secs(300));
+        if fresh || self.recent_busy {
+            return;
+        }
+        self.recent_busy = true;
+        let tx = self.sp_tx.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let top = client.top_artists().unwrap_or_default();
+            let res = client.recent_contexts().map(|(ids, albums)| (ids, albums, top));
+            let _ = tx.send(SpMsg::RecentCtx(res));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Place of a playlist / album / artist in Spotify's recently played list (0 = newest);
+    /// `usize::MAX` when it is not there.
+    pub(crate) fn recent_rank(&self, node: &Node) -> usize {
+        let id = match node {
+            Node::SpPlaylist(id, _) | Node::SpAlbum(id, _) | Node::SpArtist(id, _) => id,
+            _ => return usize::MAX,
+        };
+        self.sp_recent
+            .as_ref()
+            .and_then(|(_, v)| v.iter().position(|x| x == id))
+            .unwrap_or(usize::MAX)
     }
 
     /// Asks for Spotify's own Home shelves on a worker thread, unless they are off in Settings, there is
@@ -1020,6 +1079,7 @@ impl App {
         self.sp = None;
         self.sp_session = None;
         self.sp_shelves = None;
+        self.sp_recent = None;
         self.shelves_next = None;
         self.sp_editable.clear();
         if let Some(p) = self.player.as_mut() {

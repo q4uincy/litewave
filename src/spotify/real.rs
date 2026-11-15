@@ -32,7 +32,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SCOPES: &str = "streaming user-read-private playlist-read-private playlist-read-collaborative user-library-read user-follow-read user-library-modify user-follow-modify playlist-modify-public playlist-modify-private";
+const SCOPES: &str = "streaming user-read-private playlist-read-private playlist-read-collaborative user-library-read user-follow-read user-library-modify user-follow-modify user-read-recently-played user-top-read playlist-modify-public playlist-modify-private";
 /// The client ID librespot itself uses. It is good for streaming (playback), but Spotify
 /// rate-limits its Web API requests almost immediately, so browsing should use the
 /// user's own Client ID instead (see `Client::login`).
@@ -760,6 +760,54 @@ impl Client {
                     .or_else(|| it.get("track"))
                     .unwrap_or(&NULL);
                 track_from(t, "", None)
+            })
+            .collect())
+    }
+
+    /// From Spotify's recently played list (newest first): the ids of the playlists / albums / artists
+    /// played from (to sort "Recents"), and the albums of those songs as cards for Home.
+    pub fn recent_contexts(&self) -> Result<(Vec<String>, Vec<Entry>), String> {
+        let v = self.get(&format!("{API}/me/player/recently-played?limit=50"))?;
+        let mut ids: Vec<String> = Vec::new();
+        let mut albums: Vec<Entry> = Vec::new();
+        for it in v["items"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+            if let Some(uri) = it["context"]["uri"].as_str() {
+                let id = uri.rsplit(':').next().unwrap_or("");
+                if id.len() == 22 && !ids.iter().any(|x| x == id) {
+                    ids.push(id.to_string());
+                }
+            }
+            let t = &it["track"];
+            let a = &t["album"];
+            if let Some(id) = a["id"].as_str() {
+                if !albums.iter().any(|e| e.id == id) {
+                    albums.push(Entry {
+                        id: id.to_string(),
+                        name: a["name"].as_str().unwrap_or("Untitled").to_string(),
+                        sub: artists_of(t),
+                        art: pick_image(&a["images"]),
+                    });
+                }
+            }
+        }
+        Ok((ids, albums))
+    }
+
+    /// Your most played artists (needs the `user-top-read` permission).
+    pub fn top_artists(&self) -> Result<Vec<Entry>, String> {
+        let v = self.get(&format!("{API}/me/top/artists?limit=20&time_range=medium_term"))?;
+        Ok(v["items"]
+            .as_array()
+            .map(|a| a.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|a| {
+                Some(Entry {
+                    id: a["id"].as_str()?.to_string(),
+                    name: a["name"].as_str().unwrap_or("Unknown").to_string(),
+                    sub: "Artist".to_string(),
+                    art: pick_image(&a["images"]),
+                })
             })
             .collect())
     }
