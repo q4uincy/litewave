@@ -1,4 +1,10 @@
 ## What's new
+- New full-screen lyrics: big synced lyrics next to the cover, with the queue beside it. Open it with the arrows button in the play bar, leave with Esc
+- Right-click menu redone with icons and groups, plus Go to artist, Go to album, Copy link, Copy details and Open on the web
+- Song lists have Date added and heart columns; click the heart to like or unlike
+- Play bar: mute button next to the volume slider
+- Top bar: proper back and forward arrows, and forward now works
+- Slow frames are written to the log with the screen they happened on, and more covers are kept in memory
 - Home now shows Made for you and Your top mixes, with a new way of loading them. If they don't load, litewave looks for your Daily Mix, Discover Weekly, Release Radar, On Repeat and Repeat Rewind playlists instead. Problems are written to the log (Settings > Help > open log) with a reason. Unofficial: you can turn it off in Settings, and if nothing works, Home looks as before
 - Signing in with your own Client ID now runs both approvals in one browser tab, with no "connected" page in between
 - Equalizer and a visualizer in the play bar
