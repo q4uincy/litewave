@@ -231,7 +231,9 @@ fn heart(p: &egui::Painter, hc: egui::Pos2, on: bool, col: Color32) {
             p.add(egui::Shape::convex_polygon(tri, col, egui::Stroke::NONE));
         }
     }
-    p.add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, col)));
+    for i in 0..pts.len() {
+        p.line_segment([pts[i], pts[(i + 1) % pts.len()]], egui::Stroke::new(1.5_f32, col));
+    }
 }
 
 /// One row of "Your top songs": number, cover, title and artist, album, heart, length.
