@@ -662,12 +662,12 @@ impl App {
                         "Made for you needs the playback sign-in (Premium). Sign in again under Spotify account.".to_string()
                     } else if self.shelves_next.is_some() {
                         // The newest "home shelves" line of the log says what went wrong.
-                        let log = crate::spotify::last_log();
-                        let line = log
-                            .rsplit("  |  ")
-                            .find(|l| l.contains("home shelves"))
-                            .unwrap_or("Spotify did not answer")
-                            .replace("home shelves: ", "");
+                        let note = crate::spotify::last_shelves_note();
+                        let line = if note.is_empty() {
+                            "Spotify did not answer".to_string()
+                        } else {
+                            note.replace("home shelves: ", "")
+                        };
                         format!("Made for you and Your top mixes could not load: {line}.")
                     } else {
                         String::new()
