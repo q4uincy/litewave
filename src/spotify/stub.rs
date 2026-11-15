@@ -20,6 +20,10 @@ pub fn log_path() -> Option<PathBuf> {
 
 pub fn note(_msg: &str) {}
 
+pub fn last_shelves_note() -> String {
+    String::new()
+}
+
 pub fn status_note() -> String {
     String::new()
 }
