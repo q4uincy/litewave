@@ -1,4 +1,4 @@
-use super::{Entry, SearchResults, Shelf, ShelfCard, ShelfKind, SpEvent};
+use super::{Entry, RecentPlay, SearchResults, Shelf, ShelfCard, ShelfKind, SpEvent};
 use crate::library::Track;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use librespot::{
@@ -766,11 +766,15 @@ impl Client {
 
     /// From Spotify's recently played list (newest first): the ids of the playlists / albums / artists
     /// played from (to sort "Recents"), and the albums of those songs as cards for Home.
-    pub fn recent_contexts(&self) -> Result<(Vec<String>, Vec<Entry>), String> {
+    pub fn recent_contexts(&self) -> Result<(Vec<String>, Vec<Entry>, Vec<RecentPlay>), String> {
         let v = self.get(&format!("{API}/me/player/recently-played?limit=50"))?;
         let mut ids: Vec<String> = Vec::new();
         let mut albums: Vec<Entry> = Vec::new();
+        let mut plays: Vec<RecentPlay> = Vec::new();
         for it in v["items"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+            if let Some(track) = track_from(&it["track"], "", None) {
+                plays.push(RecentPlay { context: it["context"]["uri"].as_str().map(|s| s.to_string()), track });
+            }
             if let Some(uri) = it["context"]["uri"].as_str() {
                 let id = uri.rsplit(':').next().unwrap_or("");
                 if id.len() == 22 && !ids.iter().any(|x| x == id) {
@@ -790,7 +794,7 @@ impl Client {
                 }
             }
         }
-        Ok((ids, albums))
+        Ok((ids, albums, plays))
     }
 
     /// Your most played artists (needs the `user-top-read` permission).
@@ -809,6 +813,19 @@ impl Client {
                     art: pick_image(&a["images"]),
                 })
             })
+            .collect())
+    }
+
+    /// Your most played songs for `range` (`short_term` = last 4 weeks, `medium_term` = 6 months,
+    /// `long_term` = past year). Needs the `user-top-read` permission.
+    pub fn top_tracks(&self, range: &str) -> Result<Vec<Track>, String> {
+        let v = self.get(&format!("{API}/me/top/tracks?limit=20&time_range={range}"))?;
+        Ok(v["items"]
+            .as_array()
+            .map(|a| a.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|t| track_from(t, "", None))
             .collect())
     }
 

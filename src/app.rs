@@ -101,6 +101,12 @@ pub enum Action {
     PlayRecent(usize),
     /// Plays a queued song now (it leaves the queue).
     QueuePlay(usize),
+    /// Plays a song of Home's tiles (a song played on its own): its place in the recent list.
+    PlayPlay(usize),
+    /// Plays a song of Home's "Your top songs": (period, row).
+    PlayTop(usize, usize),
+    /// Asks for Spotify's own Home shelves again right now.
+    RetryShelves,
     /// Shows the Home screen.
     Home,
     /// Opens a playlist / album / artist / Liked Songs from the Home screen (Back returns to Home).
@@ -140,7 +146,9 @@ pub enum SpMsg {
     /// Spotify's own Home shelves. `Err` holds the seconds Spotify asked us to wait (0 = none).
     Shelves(Result<Vec<spotify::Shelf>, u64>),
     /// Ids of the playlists / albums / artists played from lately, newest first.
-    RecentCtx(Result<(Vec<String>, Vec<spotify::Entry>, Vec<spotify::Entry>), String>),
+    RecentCtx(Result<(Vec<String>, Vec<spotify::Entry>, Vec<spotify::Entry>, Vec<spotify::RecentPlay>), String>),
+    /// Your top songs for one period (0 = last 4 weeks, 1 = last 6 months, 2 = past year).
+    TopSongs(usize, Result<Vec<Track>, String>),
 }
 
 /// Results from the theme gallery threads.
@@ -274,6 +282,12 @@ pub struct App {
     /// Albums of Spotify's recently played songs, and your top artists (Home shelves).
     pub(crate) sp_recent_albums: Vec<spotify::Entry>,
     pub(crate) sp_top_artists: Vec<spotify::Entry>,
+    /// Spotify's recently played songs with where they were played from (newest first): Home's tiles.
+    pub(crate) sp_recent_plays: Vec<spotify::RecentPlay>,
+    /// Your top songs per period (4 weeks, 6 months, year), when each was read, and whether a request runs.
+    pub(crate) sp_top_songs: [Option<(Instant, Vec<Track>)>; 3],
+    top_songs_busy: [bool; 3],
+    top_songs_tried: [Option<Instant>; 3],
     /// Which tab of the queue panel is shown: false = Queue, true = Recent.
     pub(crate) queue_recent_tab: bool,
     /// When the sidebar last asked for the playlist list (so a failed load is not retried every frame).
@@ -420,6 +434,10 @@ impl App {
             recent_busy: false,
             sp_recent_albums: Vec::new(),
             sp_top_artists: Vec::new(),
+            sp_recent_plays: Vec::new(),
+            sp_top_songs: [None, None, None],
+            top_songs_busy: [false; 3],
+            top_songs_tried: [None; 3],
             queue_recent_tab: false,
             list_fetch: HashMap::new(),
             home_back: None,
@@ -818,13 +836,25 @@ impl App {
                     self.recent_busy = false;
                     // On failure (e.g. signed in before the permission existed) keep the old order,
                     // but remember the try so it is not repeated every frame.
-                    let (ids, albums, top) = res.unwrap_or_default();
+                    let (ids, albums, top, plays) = res.unwrap_or_default();
+                    if !plays.is_empty() {
+                        self.sp_recent_plays = plays;
+                    }
                     self.sp_recent = Some((Instant::now(), ids));
                     if !albums.is_empty() {
                         self.sp_recent_albums = albums;
                     }
                     if !top.is_empty() {
                         self.sp_top_artists = top;
+                    }
+                }
+                SpMsg::TopSongs(k, res) => {
+                    if k < 3 {
+                        self.top_songs_busy[k] = false;
+                        // On failure keep what is shown; `top_songs_tried` stops a retry every frame.
+                        if let Ok(v) = res {
+                            self.sp_top_songs[k] = Some((Instant::now(), v));
+                        }
                     }
                 }
                 SpMsg::Editable(Err(_)) => {}
@@ -928,8 +958,33 @@ impl App {
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let top = client.top_artists().unwrap_or_default();
-            let res = client.recent_contexts().map(|(ids, albums)| (ids, albums, top));
+            let res = client.recent_contexts().map(|(ids, albums, plays)| (ids, albums, top, plays));
             let _ = tx.send(SpMsg::RecentCtx(res));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Reads your top songs for period `k` (0 = last 4 weeks, 1 = 6 months, 2 = past year) unless a copy
+    /// under 15 minutes old exists, a request is running, or the last try was under a minute ago.
+    pub(crate) fn want_top_songs(&mut self, k: usize) {
+        let Some(client) = self.sp.clone() else { return };
+        if k >= 3 || self.top_songs_busy[k] {
+            return;
+        }
+        let fresh = self.sp_top_songs[k]
+            .as_ref()
+            .map_or(false, |(at, _)| at.elapsed() < Duration::from_secs(900));
+        let tried = self.top_songs_tried[k].map_or(false, |t| t.elapsed() < Duration::from_secs(60));
+        if fresh || tried {
+            return;
+        }
+        self.top_songs_busy[k] = true;
+        self.top_songs_tried[k] = Some(Instant::now());
+        let range = ["short_term", "medium_term", "long_term"][k];
+        let tx = self.sp_tx.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(SpMsg::TopSongs(k, client.top_tracks(range)));
             ctx.request_repaint();
         });
     }
@@ -1099,6 +1154,8 @@ impl App {
         self.sp_session = None;
         self.sp_shelves = None;
         self.sp_recent = None;
+        self.sp_top_songs = [None, None, None];
+        self.top_songs_tried = [None; 3];
         self.shelves_next = None;
         self.sp_editable.clear();
         if let Some(p) = self.player.as_mut() {
@@ -2373,6 +2430,21 @@ impl App {
                 } else if self.sp_can_back() {
                     self.view = View::Home;
                 }
+            }
+            Action::PlayTop(k, i) => {
+                let t = self.sp_top_songs.get(k).and_then(|o| o.as_ref()).and_then(|(_, v)| v.get(i)).cloned();
+                if let Some(t) = t {
+                    self.play_extra(t);
+                }
+            }
+            Action::PlayPlay(i) => {
+                if let Some(t) = self.sp_recent_plays.get(i).map(|p| p.track.clone()) {
+                    self.play_extra(t);
+                }
+            }
+            Action::RetryShelves => {
+                self.shelves_next = None;
+                self.sp_shelves = None;
             }
             Action::Home => self.view = View::Home,
             Action::HomeOpen(n) => {

@@ -56,6 +56,14 @@ pub struct ShelfCard {
     pub entry: Entry,
 }
 
+/// One entry of Spotify's recently played list: the context it was played from (a `spotify:...` uri,
+/// none for a song played on its own) and the song.
+#[derive(Clone)]
+pub struct RecentPlay {
+    pub context: Option<String>,
+    pub track: crate::library::Track,
+}
+
 /// One shelf of Spotify's own Home page, with Spotify's own title.
 #[derive(Clone)]
 pub struct Shelf {

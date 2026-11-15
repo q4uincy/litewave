@@ -1,4 +1,4 @@
-use super::{Entry, SearchResults, Shelf, SpEvent};
+use super::{Entry, RecentPlay, SearchResults, Shelf, SpEvent};
 use crate::library::Track;
 use std::{path::PathBuf, time::Duration};
 
@@ -49,10 +49,13 @@ impl Client {
     pub fn playlist_tracks(&self, _id: &str) -> Result<Vec<Track>, String> {
         Err(OFF.to_string())
     }
-    pub fn recent_contexts(&self) -> Result<(Vec<String>, Vec<Entry>), String> {
+    pub fn recent_contexts(&self) -> Result<(Vec<String>, Vec<Entry>, Vec<RecentPlay>), String> {
         Err(OFF.to_string())
     }
     pub fn top_artists(&self) -> Result<Vec<Entry>, String> {
+        Err(OFF.to_string())
+    }
+    pub fn top_tracks(&self, _range: &str) -> Result<Vec<Track>, String> {
         Err(OFF.to_string())
     }
     pub fn user_name(&self) -> Result<String, String> {

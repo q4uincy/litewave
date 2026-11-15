@@ -1,24 +1,8 @@
 ## What's new
-- Full-screen lyrics, Spotify style: the cover with the title and artist on the left, big synced lyrics on the right, and the cover's colours blurred behind. Open it with the expand button in the play bar, close it with Esc or the corner button
-- Smoother lyrics: the scroll glides to the current line, the current line grows and fades into the accent colour, lines fade out at the top and bottom, the mouse wheel scrolls by hand until the next line, and a click on a line jumps to it
-- Lyrics are looked up as soon as a song starts, so they are ready when you open them (found lyrics are kept on disk)
-- Sidebar redone in the Spotify desktop style: Home and Search at the top with icons, a Library header with search and + buttons, a "Recently played" sort pill and a "By You" pill. Liked Songs is pinned with a pin icon. iPod mode and Lyrics moved under On this PC
-- Library "Recently played" now follows your real Spotify listening history instead of the saved library order. Home tiles and shelves use the same order
-- New Home shelves: Recently played and Your top artists
-- Home explains why Made for you could not load (needs the playback sign-in, or see the log)
-- Spotify sign-in now asks for two more permissions (recently played and top artists). Sign out and sign in again once to get the new shelves and the new order
-- Right-click menu redone with icons and groups, plus Go to artist, Go to album, Copy link, Copy details and Open on the web
-- Song lists have Date added and heart columns; click the heart to like or unlike
-- Play bar: mute button next to the volume slider
-- Top bar: proper back and forward arrows, and forward now works
-- Slow frames are written to the log with the screen they happened on, and more covers are kept in memory
-- Home now shows Made for you and Your top mixes, with a new way of loading them. If they don't load, litewave looks for your Daily Mix, Discover Weekly, Release Radar, On Repeat and Repeat Rewind playlists instead. Problems are written to the log (Settings > Help > open log) with a reason. Unofficial: you can turn it off in Settings, and if nothing works, Home looks as before
-- Signing in with your own Client ID now runs both approvals in one browser tab, with no "connected" page in between
-- Equalizer and a visualizer in the play bar
-- New library panel: Liked Songs pinned on top, bigger covers, a search box, a Recents / Alphabetical switch and a + Create button
-- Search bar in the top bar: type and press Enter to search or paste a link
-- New Home shelf: Albums featuring songs you like
-- Albums show the artist and playlists show their owner under the cover
-- Home starts with the filter chips, no greeting
-- Your local music page is now under On this PC as Local music
-- Fixed Themes and Settings overlapping Add music folder in the sidebar
+- iPod mode button moved to the top bar, next to the update pill: the same "shrink" icon Spotifast uses for its mini player. One click switches to iPod mode (it is no longer in the sidebar)
+- Sidebar redone like Spotify / Spotifast: the library list now fills the whole height instead of four rows, and Local music, Queue, Add music folder, Lyrics, Themes and Settings are small pills at the bottom. Fixes Themes and Settings being drawn over the buttons above them
+- Home: the tiles at the top now follow what you played last (playlists, albums, artists, podcasts, Liked Songs and songs played on their own), like Spotify. Click a song tile to play it
+- Home: new Your top songs list with Last 4 weeks / Last 6 months / Past year, covers, album, heart and length. Click a song to play it, click the heart to like it. If it stays empty, sign out and in again to allow top listening
+- Home: cleaner cards (no box until hovered, two-line grey text that ends in an ellipsis instead of being cut off)
+- Home: shelves in Spotify's order: Made for you, Your top mixes, Your top songs, Recently played, Albums featuring songs you like, Your top artists, then your library. Duplicate shelves are left out
+- Home: when Made for you / Your top mixes cannot load, the reason is shown with a Retry link
