@@ -80,7 +80,7 @@ pub struct Config {
     pub eq_enabled: bool,
     pub eq_gains: [f32; 10],
     /// Spectrum bars drawn behind the player bar while music plays.
-    pub show_viz: bool,
+    pub viz_on: bool,
 }
 
 impl Default for Config {
@@ -118,7 +118,7 @@ impl Default for Config {
             close_to_tray: false,
             eq_enabled: false,
             eq_gains: [0.0; 10],
-            show_viz: true,
+            viz_on: false,
         }
     }
 }
