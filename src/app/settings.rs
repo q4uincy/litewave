@@ -183,7 +183,7 @@ impl App {
                 "Visualizer",
                 "Animated spectrum bars behind the player bar while music plays.",
                 |ui| {
-                    if toggle(ui, &mut self.cfg.show_viz, accent).changed() {
+                    if toggle(ui, &mut self.cfg.viz_on, accent).changed() {
                         dirty = true;
                     }
                 },
