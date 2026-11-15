@@ -7,7 +7,7 @@
 mod real;
 #[cfg(feature = "spotify")]
 pub use real::{
-    last_log, log_path, note, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI,
+    last_log, last_shelves_note, log_path, note, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI,
     SHARED_CLIENT_ID,
 };
 
@@ -15,7 +15,7 @@ pub use real::{
 mod stub;
 #[cfg(not(feature = "spotify"))]
 pub use stub::{
-    last_log, log_path, note, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI,
+    last_log, last_shelves_note, log_path, note, set_playback_options, status_note, Client, Engine, SessionHandle, REDIRECT_URI,
     SHARED_CLIENT_ID,
 };
 
