@@ -285,6 +285,28 @@ fn list_controls(
     }
 }
 
+/// Sidebar "Local music" entry with a drawn music note, same look as Home / Search.
+fn side_nav_local(ui: &mut egui::Ui, label: &str, active: bool, text: Color32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 8.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let col = if active { text } else { text.gamma_multiply(0.75) };
+    let st = egui::Stroke::new(1.9_f32, col);
+    let c = pos2(rect.min.x + 26.0, rect.center().y);
+    ui.painter().circle_filled(pos2(c.x - 4.0, c.y + 6.0), 3.6, col);
+    ui.painter().line_segment([pos2(c.x - 0.6, c.y + 5.5), pos2(c.x - 0.6, c.y - 8.0)], st);
+    ui.painter().line_segment([pos2(c.x - 0.6, c.y - 8.0), pos2(c.x + 6.5, c.y - 5.0)], st);
+    ui.painter().text(
+        pos2(rect.min.x + 52.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(16.0),
+        col,
+    );
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Sidebar Home / Search entry with a drawn icon (house or magnifier), Spotify style.
 fn side_nav_icon(ui: &mut egui::Ui, home: bool, label: &str, active: bool, text: Color32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
@@ -348,25 +370,48 @@ fn side_icon_button(ui: &mut egui::Ui, plus: bool, on: bool, bg: Color32, text: 
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// Top-bar button that switches to iPod mode: the "shrink" icon (four arrows pointing in), like the
-/// mini-player button in Spotifast.
+/// Top-bar button that switches to iPod mode, drawn as a small iPod: body, screen, click wheel.
 fn mini_mode_button(ui: &mut egui::Ui, bg: Color32, text: Color32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(36.0, 36.0), Sense::click());
     if resp.hovered() {
         ui.painter().circle_filled(rect.center(), 18.0, mix(bg, text, 0.12));
     }
-    let col = if resp.hovered() { text } else { text.gamma_multiply(0.75) };
+    let col = if resp.hovered() { text } else { text.gamma_multiply(0.8) };
     let st = egui::Stroke::new(1.6_f32, col);
     let c = rect.center();
-    for (sx, sy) in [(-1.0_f32, -1.0_f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-        // Arrow head near the middle, tail towards the corner.
-        let tip = pos2(c.x + sx * 2.0, c.y + sy * 2.0);
-        let tail = pos2(c.x + sx * 7.5, c.y + sy * 7.5);
-        ui.painter().line_segment([tip, tail], st);
-        ui.painter().line_segment([tip, pos2(tip.x + sx * 5.0, tip.y)], st);
-        ui.painter().line_segment([tip, pos2(tip.x, tip.y + sy * 5.0)], st);
-    }
+    let p = ui.painter();
+    // Body.
+    p.rect_stroke(Rect::from_center_size(c, vec2(17.0, 26.0)), 4.0, st);
+    // Screen.
+    p.rect_stroke(Rect::from_min_max(pos2(c.x - 5.5, c.y - 10.0), pos2(c.x + 5.5, c.y - 2.5)), 1.5, egui::Stroke::new(1.3_f32, col));
+    // Click wheel and its centre button.
+    let wc = pos2(c.x, c.y + 6.0);
+    p.circle_stroke(wc, 4.8, egui::Stroke::new(1.3_f32, col));
+    p.circle_filled(wc, 1.4, col);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("iPod mode")
+}
+
+/// Top-bar gear button that opens Settings (lit while Settings is open).
+fn settings_button(ui: &mut egui::Ui, on: bool, bg: Color32, text: Color32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(36.0, 36.0), Sense::click());
+    let lit = resp.hovered() || on;
+    if lit {
+        ui.painter().circle_filled(rect.center(), 18.0, mix(bg, text, 0.12));
+    }
+    let col = if lit { text } else { text.gamma_multiply(0.8) };
+    let c = rect.center();
+    let p = ui.painter();
+    for k in 0..8 {
+        let a = k as f32 / 8.0 * std::f32::consts::TAU;
+        let (sn, cs) = a.sin_cos();
+        p.line_segment(
+            [pos2(c.x + cs * 6.0, c.y + sn * 6.0), pos2(c.x + cs * 9.0, c.y + sn * 9.0)],
+            egui::Stroke::new(2.6_f32, col),
+        );
+    }
+    p.circle_stroke(c, 6.2, egui::Stroke::new(1.8_f32, col));
+    p.circle_stroke(c, 2.4, egui::Stroke::new(1.5_f32, col));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Settings")
 }
 
 /// Rounded pill (filter / sort), with an optional small chevron before the label.
@@ -543,36 +588,6 @@ fn queue_heading(ui: &mut egui::Ui, s: &str, sub: Color32) {
 }
 
 impl App {
-    /// Sidebar footer as small pills, like the library filters: the local-music items, Themes, Settings.
-    fn side_footer(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>, _accent: Color32, text: Color32, bg: Color32) {
-        let qlabel = if self.queue.is_empty() { "Queue".to_string() } else { format!("Queue ({})", self.queue.len()) };
-        let items: Vec<(String, bool, Action)> = vec![
-            ("Local music".to_string(), self.view == View::Library, Action::Library),
-            (qlabel, self.cfg.queue_panel, Action::OpenQueue),
-            ("Add music folder".to_string(), false, Action::OpenFolder),
-            ("Lyrics".to_string(), self.cfg.lyrics_panel, Action::ToggleLyricsPanel),
-            ("Themes".to_string(), self.view == View::Themes, Action::Themes),
-            ("Settings".to_string(), self.view == View::Settings, Action::Settings),
-        ];
-        let mut hit: Option<usize> = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            ui.add_space(8.0);
-            for (i, (label, on, _)) in items.iter().enumerate() {
-                let chip = egui::Button::new(egui::RichText::new(label.as_str()).size(13.0).color(if *on { bg } else { text }))
-                    .fill(if *on { text } else { mix(bg, text, 0.12) })
-                    .rounding(16.0)
-                    .min_size(vec2(0.0, 30.0));
-                if ui.add(chip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    hit = Some(i);
-                }
-            }
-        });
-        if let Some(i) = hit {
-            actions.push(items.into_iter().nth(i).map(|x| x.2).unwrap());
-        }
-    }
-
     /// Right panel: "Queue" tab (now playing, queued songs, what comes next in the list) and
     /// "Recent" tab (the last songs played).
     fn queue_panel(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>, accent: Color32, text: Color32, sub: Color32) {
@@ -1182,7 +1197,11 @@ impl App {
                     }
                     // "Update ready" button on the right (only shown when an update is waiting).
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Right-most: iPod mode. Then the update pill (only when an update is waiting).
+                        // Right to left, like Spotifast: Settings, iPod mode, then the update pill
+                        // (only when an update is waiting).
+                        if settings_button(ui, self.view == View::Settings, bg, text).clicked() {
+                            actions.push(Action::Settings);
+                        }
                         if mini_mode_button(ui, bg, text).clicked() {
                             actions.push(Action::SetIpod(true));
                         }
@@ -1202,16 +1221,6 @@ impl App {
                     // space between. Short window: everything scrolls and the footer follows the list.
                     let roomy = ui.available_height() >= 560.0;
                     let mut content = |ui: &mut egui::Ui| {
-                    if roomy {
-                        egui::TopBottomPanel::bottom("side_footer")
-                            .show_separator_line(false)
-                            .frame(egui::Frame::none())
-                            .show_inside(ui, |ui| {
-                                ui.add_space(6.0);
-                                self.side_footer(ui, actions, accent, text, bg);
-                                ui.add_space(8.0);
-                            });
-                    }
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         if let Some(tex) = &self.logo_tex {
@@ -1234,6 +1243,9 @@ impl App {
                         if side_nav_icon(ui, false, "Search", in_sp && top_is_search, text).clicked() {
                             actions.push(Action::SpRoot(Node::SpSearch(String::new())));
                         }
+                    }
+                    if side_nav_local(ui, "Local music", self.view == View::Library, text).clicked() {
+                        actions.push(Action::Library);
                     }
                     ui.add_space(8.0);
                     let (dr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
@@ -1258,16 +1270,23 @@ impl App {
                             st,
                         );
                         ui.label(egui::RichText::new("Library").size(16.0).strong().color(text));
-                        if has_sp {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if side_icon_button(ui, true, lib_open, bg, text)
-                                    .on_hover_text("Create playlist")
-                                    .clicked()
-                                {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let plus = side_icon_button(ui, true, lib_open, bg, text)
+                                .on_hover_text(if has_sp { "Create playlist or add music folder" } else { "Add music folder" });
+                            let pid = egui::Id::new("lib_plus_menu");
+                            if plus.clicked() {
+                                ui.memory_mut(|m| m.toggle_popup(pid));
+                            }
+                            egui::popup::popup_below_widget(ui, pid, &plus, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                                ui.set_min_width(170.0);
+                                if has_sp && ui.button("Create playlist").clicked() {
                                     actions.push(Action::SpDialog(Dialog::NewPlaylist));
                                 }
+                                if ui.button("Add music folder").clicked() {
+                                    actions.push(Action::OpenFolder);
+                                }
                             });
-                        }
+                        });
                     });
                     ui.data_mut(|d| {
                         d.insert_temp(lib_open_id, lib_open);
@@ -1425,11 +1444,6 @@ impl App {
                         actions.push(Action::SpotifyWindow);
                     }
 
-                    if !roomy {
-                        ui.add_space(10.0);
-                        self.side_footer(ui, actions, accent, text, bg);
-                        ui.add_space(10.0);
-                    }
                     };
                     if roomy {
                         content(ui);
