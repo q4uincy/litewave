@@ -82,6 +82,8 @@ pub enum Action {
     ToggleLyrics,
     /// Opens or closes the lyrics panel in the main window.
     ToggleLyricsPanel,
+    /// Opens or closes the full-screen lyrics view.
+    ToggleLyricsFull,
     ToggleExplicit,
     /// Open the artist / album of a song row: (Spotify id, name, is a Spotify song).
     OpenArtist(Option<String>, String, bool),
@@ -296,6 +298,16 @@ pub struct App {
     lyrics_key: String,
     /// The lyric line the main window last scrolled to.
     lyric_shown: Option<usize>,
+    /// Full-screen lyrics: open, the eased scroll position and its target (points), the line it
+    /// follows, whether it follows the song (the mouse wheel pauses that until the next line),
+    /// "jump instead of glide" for the next frame, and the song its state belongs to.
+    pub(crate) lyrics_full: bool,
+    pub(crate) lyr_cur: f32,
+    pub(crate) lyr_tgt: f32,
+    pub(crate) lyr_line: Option<usize>,
+    pub(crate) lyr_follow: bool,
+    pub(crate) lyr_snap: bool,
+    pub(crate) lyr_key: String,
     /// Last local song + position from the previous run (restored once the library is scanned).
     resume: Option<(std::path::PathBuf, f32)>,
     resume_saved: Instant,
@@ -423,6 +435,13 @@ impl App {
             lyrics_rx: None,
             lyrics_key: String::new(),
             lyric_shown: None,
+            lyrics_full: false,
+            lyr_cur: 0.0,
+            lyr_tgt: 0.0,
+            lyr_line: None,
+            lyr_follow: true,
+            lyr_snap: true,
+            lyr_key: String::new(),
             resume: crate::resume::load(),
             resume_saved: Instant::now(),
         };
@@ -1376,7 +1395,7 @@ impl App {
             }
         }
 
-        let key = match (&self.now, self.cfg.show_lyrics) {
+        let key = match (&self.now, true) {
             (Some(t), true) => format!(
                 "{}|{}|{}",
                 t.path.display(),
@@ -2407,6 +2426,15 @@ impl App {
                     self.cfg.queue_panel = false;
                 }
                 self.cfg_dirty = true;
+            }
+            Action::ToggleLyricsFull => {
+                self.lyrics_full = !self.lyrics_full;
+                if self.lyrics_full {
+                    self.cfg.show_lyrics = true;
+                    self.lyr_snap = true;
+                    self.lyr_follow = true;
+                    self.cfg_dirty = true;
+                }
             }
             Action::ToggleLyrics => {
                 self.cfg.show_lyrics = !self.cfg.show_lyrics;

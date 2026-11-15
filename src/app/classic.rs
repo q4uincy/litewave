@@ -370,6 +370,20 @@ fn side_pill(ui: &mut egui::Ui, label: &str, chevron: bool, on: bool, bg: Color3
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// Small "expand" icon button (four corner brackets) for the play bar.
+fn expand_button(ui: &mut egui::Ui, text: Color32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
+    let col = if resp.hovered() { text } else { text.gamma_multiply(0.75) };
+    let st = egui::Stroke::new(1.6_f32, col);
+    let c = rect.center();
+    for (sx, sy) in [(-1.0_f32, -1.0_f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let e = pos2(c.x + sx * 7.0, c.y + sy * 7.0);
+        ui.painter().line_segment([e, pos2(e.x - sx * 5.0, e.y)], st);
+        ui.painter().line_segment([e, pos2(e.x, e.y - sy * 5.0)], st);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 const SIDE_ROW_H: f32 = 64.0;
 
 /// Sidebar library row, Spotify style: a 48 px rounded cover, the name (green while it is the open
@@ -718,6 +732,7 @@ impl App {
 
         // Esc / Backspace / Alt+Left go back one Spotify page (not while typing or in a dialog).
         if self.sp_can_back()
+            && !self.lyrics_full
             && self.dialog.is_none()
             && !ctx.wants_keyboard_input()
         {
@@ -959,6 +974,9 @@ impl App {
                             .on_hover_text("Lyrics");
                             if lyr.clicked() {
                                 actions.push(Action::ToggleLyricsPanel);
+                            }
+                            if expand_button(ui, text).on_hover_text("Full-screen lyrics").clicked() {
+                                actions.push(Action::ToggleLyricsFull);
                             }
                             if side_w >= 200.0 {
                                 let q = mode_button(
@@ -1604,6 +1622,7 @@ impl App {
         self.row_menu_ui(ctx, actions);
         self.dialog_ui(ctx, actions);
         self.notice_ui(ctx);
+        self.lyrics_fullscreen(ctx, actions, pos, accent);
 
         if dismiss_error {
             self.error = None;
@@ -1615,6 +1634,281 @@ impl App {
         if typing {
             self.search_focus = true;
         }
+    }
+
+    /// Full-screen lyrics: the cover and title on the left, big synced lyrics on the right, the cover's
+    /// colours (blurred) behind. The scroll glides to the active line, the active line grows and takes
+    /// the accent colour, the mouse wheel scrolls by hand until the next line, a click seeks.
+    /// Esc or the corner button closes it.
+    pub(super) fn lyrics_fullscreen(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>, pos: f32, accent: Color32) {
+        let open = ctx.animate_bool_with_time(egui::Id::new("lyr_full_anim"), self.lyrics_full, 0.2);
+        if open <= 0.0 {
+            return;
+        }
+        if self.lyrics_full && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            actions.push(Action::ToggleLyricsFull);
+        }
+        let screen = ctx.screen_rect();
+        let (w, h) = (screen.width(), screen.height());
+        let (title, artist) = self
+            .now
+            .as_ref()
+            .map(|t| (t.title.clone(), t.artist.clone()))
+            .unwrap_or_default();
+        let has_song = self.now.is_some();
+        let cover_tex = self.current_art(ctx, 512);
+        // A tiny copy of the cover, stretched over the window: the soft linear scaling is the blur.
+        let blur_tex = self.current_art(ctx, 16);
+        let status = self.lyrics_status;
+        // A new song: jump to its first line instead of gliding there.
+        if self.lyr_key != self.lyrics_key {
+            self.lyr_key = self.lyrics_key.clone();
+            self.lyr_snap = true;
+            self.lyr_follow = true;
+            self.lyr_line = None;
+        }
+        let lyr = self.lyrics.take();
+
+        egui::Area::new(egui::Id::new("lyr_full"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                // Covers the whole window and takes the clicks, so nothing behind it reacts.
+                let (rect, _bg) = ui.allocate_exact_size(screen.size(), Sense::click());
+                let painter = ui.painter_at(rect);
+                let fade = |c: Color32| c.gamma_multiply(open);
+
+                // Background.
+                painter.rect_filled(rect, 0.0, fade(Color32::BLACK));
+                if let Some(id) = blur_tex {
+                    painter.image(
+                        id,
+                        rect,
+                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                        Color32::from_white_alpha((170.0 * open) as u8),
+                    );
+                }
+                let mut shade = egui::Mesh::default();
+                shade.colored_vertex(rect.left_top(), Color32::from_black_alpha(0));
+                shade.colored_vertex(rect.right_top(), Color32::from_black_alpha((130.0 * open) as u8));
+                shade.colored_vertex(rect.right_bottom(), Color32::from_black_alpha((130.0 * open) as u8));
+                shade.colored_vertex(rect.left_bottom(), Color32::from_black_alpha(0));
+                shade.add_triangle(0, 1, 2);
+                shade.add_triangle(0, 2, 3);
+                painter.add(egui::Shape::mesh(shade));
+
+                // Header: title on the left, close button on the right.
+                painter.text(
+                    pos2(rect.min.x + 48.0, rect.min.y + 38.0),
+                    Align2::LEFT_CENTER,
+                    "Lyrics",
+                    FontId::proportional(18.0),
+                    fade(Color32::WHITE),
+                );
+                let cb = Rect::from_center_size(pos2(rect.max.x - 52.0, rect.min.y + 38.0), vec2(40.0, 40.0));
+                let cr = ui.interact(cb, egui::Id::new("lyr_full_close"), Sense::click());
+                let cst = egui::Stroke::new(
+                    1.8_f32,
+                    fade(if cr.hovered() { Color32::WHITE } else { Color32::from_gray(215) }),
+                );
+                let cc = cb.center();
+                for (sx, sy) in [(-1.0_f32, -1.0_f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                    let e = pos2(cc.x + sx * 3.5, cc.y + sy * 3.5);
+                    painter.line_segment([pos2(e.x + sx * 6.0, e.y), e], cst);
+                    painter.line_segment([pos2(e.x, e.y + sy * 6.0), e], cst);
+                }
+                if cr.hovered() {
+                    ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if cr.clicked() {
+                    actions.push(Action::ToggleLyricsFull);
+                }
+
+                // Cover, title and artist (left). Narrow windows show the lyrics only.
+                let wide = w >= 860.0;
+                if wide {
+                    let side = (w * 0.33).min(h * 0.56).max(160.0);
+                    let left = rect.min.x + w * 0.11;
+                    let top = rect.min.y + (h - (side + 66.0)) / 2.0 + h * 0.02;
+                    let cover = Rect::from_min_size(pos2(left, top), vec2(side, side));
+                    for (grow, a) in [(26.0_f32, 10.0_f32), (16.0, 14.0), (8.0, 20.0)] {
+                        painter.rect_filled(
+                            cover.expand(grow).translate(vec2(0.0, 10.0)),
+                            18.0,
+                            Color32::from_black_alpha((a * open) as u8),
+                        );
+                    }
+                    match cover_tex {
+                        Some(id) => {
+                            egui::Image::new(egui::load::SizedTexture::new(id, cover.size()))
+                                .fit_to_exact_size(cover.size())
+                                .rounding(egui::Rounding::same(10.0))
+                                .tint(Color32::from_white_alpha((255.0 * open) as u8))
+                                .paint_at(ui, cover);
+                        }
+                        None => paint_cover(&painter, cover, None, &title),
+                    }
+                    let tclip = painter.with_clip_rect(Rect::from_min_max(
+                        pos2(left, top + side),
+                        pos2(left + side, top + side + 72.0),
+                    ));
+                    tclip.text(
+                        pos2(left, top + side + 30.0),
+                        Align2::LEFT_CENTER,
+                        &title,
+                        FontId::proportional(22.0),
+                        fade(Color32::WHITE),
+                    );
+                    tclip.text(
+                        pos2(left, top + side + 56.0),
+                        Align2::LEFT_CENTER,
+                        &artist,
+                        FontId::proportional(14.0),
+                        fade(Color32::from_white_alpha(215)),
+                    );
+                }
+
+                // Lyrics column (right).
+                let (cx, cw) = if wide { (rect.min.x + w * 0.483, w * 0.38) } else { (rect.min.x + w * 0.07, w * 0.86) };
+                let col = Rect::from_min_max(pos2(cx, rect.min.y + h * 0.09), pos2(cx + cw, rect.max.y - 12.0));
+                let col_h = col.height();
+                let base = (h * 0.034).clamp(20.0, 38.0);
+                let anchor = col_h * 0.2; // where the active line sits, from the top of the column
+
+                let Some(l) = lyr.as_ref() else {
+                    let msg = if !has_song {
+                        "Play a song to see its lyrics."
+                    } else {
+                        match status {
+                            LyricsStatus::Loading => "Finding lyrics...",
+                            LyricsStatus::Missing => "No lyrics found for this song.",
+                            LyricsStatus::Failed => "Could not reach the lyrics service.",
+                            _ => "",
+                        }
+                    };
+                    if !msg.is_empty() {
+                        painter.text(
+                            pos2(col.min.x, col.min.y + anchor),
+                            Align2::LEFT_CENTER,
+                            msg,
+                            FontId::proportional(base * 0.8),
+                            fade(Color32::from_gray(170)),
+                        );
+                    }
+                    return;
+                };
+
+                let synced = l.synced;
+                let cur_line = l.current(pos + lyrics::LEAD);
+                // Lay every line out (white; the colour is set when drawing so it can fade).
+                let gap = base * 0.62;
+                let mut lines: Vec<(f32, std::sync::Arc<egui::Galley>, f32)> = Vec::with_capacity(l.lines.len());
+                let mut y = 0.0_f32;
+                for (i, (_, line)) in l.lines.iter().enumerate() {
+                    let act = if synced {
+                        ctx.animate_bool_with_time(egui::Id::new(("lyr_l", i)), Some(i) == cur_line, 0.3)
+                    } else {
+                        0.0
+                    };
+                    let shown = if line.trim().is_empty() { "\u{2022} \u{2022} \u{2022}" } else { line.as_str() };
+                    let g = painter.layout(
+                        shown.to_string(),
+                        FontId::proportional(base * (1.0 + 0.1 * act)),
+                        Color32::WHITE,
+                        cw,
+                    );
+                    let hh = g.size().y;
+                    lines.push((y, g, act));
+                    y += hh + gap;
+                }
+                let content_h = y;
+                let min_s = if synced { -anchor } else { -20.0 };
+                let max_s = (content_h - col_h * 0.6).max(min_s);
+
+                // Scroll target: the active line (while following) or where the wheel put it.
+                if synced && cur_line != self.lyr_line {
+                    self.lyr_line = cur_line;
+                    self.lyr_follow = true;
+                }
+                let wheel = ctx.input(|i| i.smooth_scroll_delta.y);
+                if wheel != 0.0 {
+                    self.lyr_follow = false;
+                    self.lyr_tgt -= wheel * 1.2;
+                }
+                if self.lyr_follow && synced {
+                    self.lyr_tgt = match cur_line {
+                        Some(c) => lines[c].0 + lines[c].1.size().y / 2.0 - anchor,
+                        None => min_s,
+                    };
+                } else if self.lyr_snap && !synced {
+                    self.lyr_tgt = min_s;
+                }
+                self.lyr_tgt = self.lyr_tgt.clamp(min_s, max_s);
+                // Ease towards it (exponential, so it is smooth at any frame rate).
+                if self.lyr_snap {
+                    self.lyr_cur = self.lyr_tgt;
+                    self.lyr_snap = false;
+                } else {
+                    let dt = ctx.input(|i| i.stable_dt).min(0.05);
+                    self.lyr_cur += (self.lyr_tgt - self.lyr_cur) * (1.0 - (-dt * 9.0).exp());
+                }
+                if (self.lyr_tgt - self.lyr_cur).abs() > 0.4 {
+                    ctx.request_repaint();
+                } else {
+                    self.lyr_cur = self.lyr_tgt;
+                }
+
+                // Draw the visible lines; they fade out towards the top and bottom edge.
+                let lp = painter.with_clip_rect(col);
+                for (i, (ty, g, act)) in lines.iter().enumerate() {
+                    let top_y = col.min.y + ty - self.lyr_cur;
+                    let hh = g.size().y;
+                    if top_y + hh < col.min.y - 4.0 || top_y > col.max.y + 4.0 {
+                        continue;
+                    }
+                    let mid = top_y + hh / 2.0;
+                    let edge = ((mid - col.min.y) / 80.0)
+                        .clamp(0.0, 1.0)
+                        .min(((col.max.y - mid) / 80.0).clamp(0.0, 1.0));
+                    let mut hovered = false;
+                    if synced {
+                        let hit = Rect::from_min_size(pos2(col.min.x, top_y), vec2(cw, hh)).intersect(col);
+                        if hit.is_positive() {
+                            let r = ui.interact(hit, egui::Id::new(("lyr_hit", i)), Sense::click());
+                            hovered = r.hovered();
+                            if hovered {
+                                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if r.clicked() {
+                                actions.push(Action::Seek(l.lines[i].0));
+                            }
+                        }
+                    }
+                    let colr = if synced {
+                        mix(Color32::from_gray(if hovered { 195 } else { 125 }), accent, *act)
+                    } else {
+                        Color32::from_gray(235)
+                    };
+                    lp.galley_with_override_text_color(
+                        pos2(col.min.x, top_y),
+                        g.clone(),
+                        colr.gamma_multiply(open * edge),
+                    );
+                }
+
+                // Thin scroll thumb to the right of the column.
+                if content_h > col_h * 0.7 {
+                    let frac = ((self.lyr_cur - min_s) / (max_s - min_s).max(1.0)).clamp(0.0, 1.0);
+                    let th = (col_h * 0.12).clamp(40.0, col_h * 0.3);
+                    let tx = col.max.x + (w * 0.027).max(14.0);
+                    painter.rect_filled(
+                        Rect::from_min_size(pos2(tx, col.min.y + frac * (col_h - th)), vec2(5.0, th)),
+                        2.5,
+                        Color32::from_white_alpha((90.0 * open) as u8),
+                    );
+                }
+            });
+        self.lyrics = lyr;
     }
 
     /// Lyrics panel: synced lines follow the song (click a line to jump there), plain lyrics scroll.
