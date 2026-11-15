@@ -826,9 +826,42 @@ impl App {
         let from_name: Option<String> = self.playing_from.as_ref().map(|(_, n)| n.clone());
 
         // ---- player bar --------------------------------------------------
+        // The bar takes a dark shade of the cover's colour (and its accent), like Spotify. It fades
+        // between songs and goes back to the theme colours when there is no cover. Dark themes only.
+        let dark_theme = (bg.r() as u32 + bg.g() as u32 + bg.b() as u32) < 300;
+        let tint = if dark_theme {
+            self.now
+                .as_ref()
+                .and_then(|t| t.art_key())
+                .and_then(|k| self.art.tint(&k, art::MID))
+        } else {
+            None
+        };
+        let (bar_bg_t, bar_accent_t) = match tint {
+            Some(c) => {
+                let h = egui::ecolor::Hsva::from_rgb([c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0]);
+                let to32 = |v: [f32; 3]| Color32::from_rgb((v[0] * 255.0) as u8, (v[1] * 255.0) as u8, (v[2] * 255.0) as u8);
+                let back = egui::ecolor::Hsva::new(h.h, (h.s * 0.55).min(0.5), 0.24, 1.0).to_rgb();
+                let acc = if h.s < 0.18 {
+                    accent
+                } else {
+                    to32(egui::ecolor::Hsva::new(h.h, h.s.clamp(0.4, 0.75), 0.95, 1.0).to_rgb())
+                };
+                (to32(back), acc)
+            }
+            None => (ctx.style().visuals.panel_fill, accent),
+        };
+        let fade = |name: &str, c: Color32| {
+            let ch = |i: usize, v: u8| ctx.animate_value_with_time(egui::Id::new(("bar_tint", name, i)), v as f32, 0.35);
+            Color32::from_rgb(ch(0, c.r()) as u8, ch(1, c.g()) as u8, ch(2, c.b()) as u8)
+        };
+        let bar_bg = fade("bg", bar_bg_t);
+        let bar_accent = fade("accent", bar_accent_t);
         egui::TopBottomPanel::bottom("player")
             .exact_height(84.0)
+            .frame(egui::Frame::side_top_panel(&ctx.style()).fill(bar_bg))
             .show(ctx, |ui| {
+                let accent = bar_accent;
                 let full = ui.available_rect_before_wrap();
                 let w = full.width();
                 let narrow = w < 600.0;
@@ -840,7 +873,7 @@ impl App {
                 );
 
                 // Spectrum bars behind everything else in the bar.
-                if self.cfg.show_viz {
+                if self.cfg.viz_on {
                     let strip = Rect::from_min_max(pos2(full.min.x, full.max.y - 44.0), full.max);
                     crate::viz::paint(ui.painter(), strip, accent);
                 }
@@ -895,7 +928,9 @@ impl App {
                                 ui.painter().add(egui::Shape::convex_polygon(tri, col, egui::Stroke::NONE));
                             }
                         }
-                        ui.painter().add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, col)));
+                        for i in 0..pts.len() {
+                            ui.painter().line_segment([pts[i], pts[(i + 1) % pts.len()]], egui::Stroke::new(1.5_f32, col));
+                        }
                         if hr.clicked() {
                             let uri = vec![format!("spotify:track:{id}")];
                             actions.push(if liked { Action::SpUnsave(uri) } else { Action::SpSave(uri) });
@@ -1008,6 +1043,7 @@ impl App {
                         vec2(side_w, 34.0),
                     );
                     let vol_w = if side_w < 220.0 { 70.0 } else { 110.0 };
+                    let mut viz_toggle = false;
                     ui.allocate_ui_at_rect(vr, |ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let (resp, f) = bar(ui, vol_w, self.cfg.volume, accent, track_col, true);
@@ -1042,9 +1078,30 @@ impl App {
                                 if q.clicked() {
                                     actions.push(Action::OpenQueue);
                                 }
+                                // Visualizer on / off (off by default).
+                                let (vb, vresp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+                                let vcol = if self.cfg.viz_on { accent } else if vresp.hovered() { text } else { sub };
+                                for (i, h) in [0.45_f32, 0.9, 0.6, 0.75].iter().enumerate() {
+                                    let x = vb.center().x - 7.5 + i as f32 * 5.0;
+                                    ui.painter().line_segment(
+                                        [pos2(x, vb.center().y + 7.0), pos2(x, vb.center().y + 7.0 - 14.0 * h)],
+                                        egui::Stroke::new(2.0_f32, vcol),
+                                    );
+                                }
+                                if vresp
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(if self.cfg.viz_on { "Visualizer: on" } else { "Visualizer: off" })
+                                    .clicked()
+                                {
+                                    viz_toggle = true;
+                                }
                             }
                         });
                     });
+                    if viz_toggle {
+                        self.cfg.viz_on = !self.cfg.viz_on;
+                        self.cfg_dirty = true;
+                    }
                 }
             });
 
@@ -1184,7 +1241,8 @@ impl App {
                     ui.add_space(10.0);
                     let has_sp = self.sp.is_some();
                     let lib_open_id = egui::Id::new("lib_search_open");
-                    let mut lib_open: bool = ui.data(|d| d.get_temp::<bool>(lib_open_id)).unwrap_or(false);
+                    // Library search icon removed: the Search button above already does it.
+                    let lib_open = false;
                     ui.horizontal(|ui| {
                         // Library icon (three bars) and title, like Spotify's own sidebar.
                         let (ir, _) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
@@ -1207,12 +1265,6 @@ impl App {
                                     .clicked()
                                 {
                                     actions.push(Action::SpDialog(Dialog::NewPlaylist));
-                                }
-                                if side_icon_button(ui, false, lib_open, bg, text)
-                                    .on_hover_text("Search in Your Library")
-                                    .clicked()
-                                {
-                                    lib_open = !lib_open;
                                 }
                             });
                         }
@@ -2647,6 +2699,12 @@ fn track_menu(
         let label = if t.is_episode() { "Save episode" } else { "Save to Liked Songs" };
         if ui.button(label).clicked() {
             actions.push(Action::SpSave(vec![uri.clone()]));
+            ui.close_menu();
+        }
+        // The liked list is only partly loaded for big libraries, so a liked song can look unliked here.
+        // Always offer Remove for songs so it can never be missing.
+        if !t.is_episode() && ui.button("Remove from Liked Songs").clicked() {
+            actions.push(Action::SpUnsave(vec![uri.clone()]));
             ui.close_menu();
         }
     }
