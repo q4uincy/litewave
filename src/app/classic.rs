@@ -1446,6 +1446,7 @@ impl App {
             egui::SidePanel::right("lyrics")
                 .exact_width((screen_w * 0.3).clamp(280.0, 400.0))
                 .resizable(false)
+                .frame(egui::Frame::side_top_panel(&ctx.style()).fill(bar_bg))
                 .show(ctx, |ui| self.lyrics_panel(ui, actions, pos, text, sub));
         }
 
@@ -1454,7 +1455,8 @@ impl App {
             egui::SidePanel::right("queue")
                 .exact_width((screen_w * 0.3).clamp(280.0, 400.0))
                 .resizable(false)
-                .show(ctx, |ui| self.queue_panel(ui, actions, accent, text, sub));
+                .frame(egui::Frame::side_top_panel(&ctx.style()).fill(bar_bg))
+                .show(ctx, |ui| self.queue_panel(ui, actions, bar_accent, text, sub));
         }
 
         // ---- main area ---------------------------------------------------
