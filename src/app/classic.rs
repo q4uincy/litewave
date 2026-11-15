@@ -55,6 +55,7 @@ fn track_row(
     text: Color32,
     sub: Color32,
     blocked: bool,
+    liked: Option<bool>,
     actions: &mut Vec<Action>,
 ) -> egui::Response {
     // Explicit songs are greyed out while "Explicit content" is off.
@@ -123,7 +124,7 @@ fn track_row(
     paint_cover(p, cover, tex, &t.title);
 
     let tx = rect.min.x + 94.0;
-    let dur_w = 64.0;
+    let dur_w = 94.0;
     let album_w = if wide { rect.width() * 0.26 } else { 0.0 };
     let title_right = rect.max.x - dur_w - album_w - 12.0;
     let pc = p.with_clip_rect(Rect::from_min_max(
@@ -180,6 +181,28 @@ fn track_row(
         FontId::proportional(13.0),
         sub,
     );
+
+    // Heart (Spotify songs): filled when liked, click to like / unlike.
+    if let (Some(is_liked), false) = (liked, blocked) {
+        if let Some(uri) = t.spotify_uri() {
+            let hc = pos2(rect.max.x - 84.0, cy);
+            let hr = ui
+                .interact(
+                    Rect::from_center_size(hc, vec2(28.0, 28.0)),
+                    ui.id().with(("heart", row_no)),
+                    Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(if is_liked { "Remove from Liked Songs" } else { "Save to Liked Songs" });
+            if is_liked || ui.rect_contains_pointer(rect) || hr.hovered() {
+                let col = if is_liked { accent } else if hr.hovered() { text } else { sub };
+                super::home::heart(ui.painter(), hc, is_liked, col);
+            }
+            if hr.clicked() {
+                actions.push(if is_liked { Action::SpUnsave(vec![uri]) } else { Action::SpSave(vec![uri]) });
+            }
+        }
+    }
 
     // "..." button (shown on hover): play next, add to queue, save.
     if !blocked {
@@ -250,7 +273,7 @@ fn list_header(ui: &mut egui::Ui, wide: bool, sub: Color32) {
     p.text(pos2(rect.min.x + 22.0, cy), Align2::CENTER_CENTER, "#", font.clone(), sub);
     p.text(pos2(rect.min.x + 94.0, cy), Align2::LEFT_CENTER, "Title", font.clone(), sub);
     if wide {
-        let ax = rect.max.x - 64.0 - rect.width() * 0.26;
+        let ax = rect.max.x - 94.0 - rect.width() * 0.26;
         p.text(pos2(ax, cy), Align2::LEFT_CENTER, "Album", font.clone(), sub);
     }
     p.text(pos2(rect.max.x - 14.0, cy), Align2::RIGHT_CENTER, "Time", font, sub);
@@ -902,14 +925,14 @@ impl App {
                     let tx = cover.max.x + 12.0;
                     let clip = Rect::from_min_max(pos2(tx, full.min.y), pos2(full.min.x + side_w, full.max.y));
                     let pc = p.with_clip_rect(clip);
-                    pc.text(
+                    let title_rect = pc.text(
                         pos2(tx, cy - 10.0),
                         Align2::LEFT_CENTER,
                         &title,
                         FontId::proportional(14.5),
                         text,
                     );
-                    pc.text(
+                    let sub_rect = pc.text(
                         pos2(tx, cy + 10.0),
                         Align2::LEFT_CENTER,
                         match buf_secs {
@@ -922,30 +945,17 @@ impl App {
                     // Heart: like / unlike the playing Spotify song.
                     if let Some(id) = &current_sp_id {
                         let liked = self.liked_ids.contains(id);
-                        let hc = pos2(full.min.x + side_w - 14.0, cy);
+                        // Like Spotifast: the heart sits just past the title / artist text.
+                        let hc = pos2(
+                            (title_rect.max.x.max(sub_rect.max.x) + 21.0).min(full.min.x + side_w - 14.0),
+                            cy,
+                        );
                         let hr = ui
                             .interact(Rect::from_center_size(hc, vec2(24.0, 24.0)), ui.id().with("heart"), Sense::click())
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .on_hover_text(if liked { "Remove from Liked Songs" } else { "Save to Liked Songs" });
                         let col = if liked { accent } else if hr.hovered() { text } else { sub };
-                        let pts: Vec<egui::Pos2> = (0..32)
-                            .map(|i| {
-                                let t = i as f32 / 32.0 * std::f32::consts::TAU;
-                                let x = 16.0 * t.sin().powi(3);
-                                let y = 13.0 * t.cos() - 5.0 * (2.0 * t).cos() - 2.0 * (3.0 * t).cos() - (4.0 * t).cos();
-                                pos2(hc.x + x * 0.5, hc.y - y * 0.5 - 1.0)
-                            })
-                            .collect();
-                        if liked {
-                            let mid = pos2(hc.x, hc.y - 1.0);
-                            for i in 0..pts.len() {
-                                let tri = vec![mid, pts[i], pts[(i + 1) % pts.len()]];
-                                ui.painter().add(egui::Shape::convex_polygon(tri, col, egui::Stroke::NONE));
-                            }
-                        }
-                        for i in 0..pts.len() {
-                            ui.painter().line_segment([pts[i], pts[(i + 1) % pts.len()]], egui::Stroke::new(1.5_f32, col));
-                        }
+                        super::home::heart(ui.painter(), hc, liked, col);
                         if hr.clicked() {
                             let uri = vec![format!("spotify:track:{id}")];
                             actions.push(if liked { Action::SpUnsave(uri) } else { Action::SpSave(uri) });
@@ -1701,6 +1711,10 @@ impl App {
                                 text,
                                 sub,
                                 t.explicit && !allow_explicit,
+                                match (&t.spotify_id, t.is_episode()) {
+                                    (Some(id), false) => Some(self.liked_ids.contains(id)),
+                                    _ => None,
+                                },
                                 actions,
                             );
                             resp.context_menu(|ui| queue_buttons(ui, actions, t));
@@ -2661,7 +2675,19 @@ fn sp_track_row(
 ) -> bool {
     let (accent, text, sub) = colors;
     let resp = track_row(
-        ui, cache, row_no, t, selected, playing, wide, accent, text, sub, blocked, actions,
+        ui,
+        cache,
+        row_no,
+        t,
+        selected,
+        playing,
+        wide,
+        accent,
+        text,
+        sub,
+        blocked,
+        if t.spotify_id.is_some() && !t.is_episode() { Some(on_liked) } else { None },
+        actions,
     );
     resp.context_menu(|ui| track_menu(ui, actions, t, editable, edit_pid, on_liked));
     resp.clicked()
@@ -2721,6 +2747,32 @@ fn track_menu(
         // Always offer Remove for songs so it can never be missing.
         if !t.is_episode() && ui.button("Remove from Liked Songs").clicked() {
             actions.push(Action::SpUnsave(vec![uri.clone()]));
+            ui.close_menu();
+        }
+    }
+    if !t.is_episode() {
+        ui.separator();
+        if t.artist_id.is_some() && ui.button("Go to artist").clicked() {
+            actions.push(Action::OpenArtist(t.artist_id.clone(), t.artist.clone(), true));
+            ui.close_menu();
+        }
+        if t.album_id.is_some() && ui.button("Go to album").clicked() {
+            actions.push(Action::OpenAlbum(t.album_id.clone(), t.album.clone(), true));
+            ui.close_menu();
+        }
+    }
+    if let Some(url) = t.spotify_id.as_deref().map(|id| match id.strip_prefix("episode:") {
+        Some(e) => format!("https://open.spotify.com/episode/{e}"),
+        None => format!("https://open.spotify.com/track/{id}"),
+    }) {
+        ui.separator();
+        if ui.button("Copy link").clicked() {
+            let link = url.clone();
+            ui.output_mut(|o| o.copied_text = link);
+            ui.close_menu();
+        }
+        if ui.button("Open in Spotify").clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
             ui.close_menu();
         }
     }

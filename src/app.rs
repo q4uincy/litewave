@@ -1047,6 +1047,9 @@ impl App {
             // Like Spotifast: when Spotify's private Home gives no Made for you, look for Spotify's own
             // playlists (Daily Mix, Discover Weekly ...) by search instead.
             if !shelves.iter().any(|s| s.title == "Made for you") {
+                // Keep why the private Home feed failed: the search below may add its own line, and the
+                // Home page shows the newest one.
+                let home_note = spotify::last_shelves_note().replace("home shelves: ", "");
                 match client.made_for_you_search() {
                     Ok(cards) => {
                         spotify::note(&format!("home shelves: Made for you found by search ({} playlists)", cards.len()));
@@ -1055,7 +1058,10 @@ impl App {
                             spotify::Shelf { title: "Made for you".to_string(), subtitle: String::new(), cards },
                         );
                     }
-                    Err(e) => spotify::note(&format!("home shelves: search for Made for you failed: {e}")),
+                    Err(e) => {
+                        let first = if home_note.is_empty() { "no answer".to_string() } else { home_note };
+                        spotify::note(&format!("home shelves: Home feed: {first}; search: {e}"));
+                    }
                 }
             }
             let res = if shelves.is_empty() { Err(wait) } else { Ok(shelves) };

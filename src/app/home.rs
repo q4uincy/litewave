@@ -215,7 +215,7 @@ fn card(ui: &mut egui::Ui, cache: &mut ArtCache, c: &Card, base: Color32, text: 
 }
 
 /// A heart outline (filled when `on`) centred at `hc`.
-fn heart(p: &egui::Painter, hc: egui::Pos2, on: bool, col: Color32) {
+pub(super) fn heart(p: &egui::Painter, hc: egui::Pos2, on: bool, col: Color32) {
     let pts: Vec<egui::Pos2> = (0..32)
         .map(|i| {
             let t = i as f32 / 32.0 * std::f32::consts::TAU;
@@ -225,11 +225,18 @@ fn heart(p: &egui::Painter, hc: egui::Pos2, on: bool, col: Color32) {
         })
         .collect();
     if on {
-        let mid = pos2(hc.x, hc.y - 1.0);
-        for i in 0..pts.len() {
-            let tri = vec![mid, pts[i], pts[(i + 1) % pts.len()]];
-            p.add(egui::Shape::convex_polygon(tri, col, egui::Stroke::NONE));
+        // One mesh (a fan around the middle) instead of 32 separate anti-aliased triangles:
+        // those left visible seams across the filled heart.
+        let mut mesh = egui::epaint::Mesh::default();
+        mesh.colored_vertex(pos2(hc.x, hc.y - 1.0), col);
+        for pt in &pts {
+            mesh.colored_vertex(*pt, col);
         }
+        let n = pts.len() as u32;
+        for i in 0..n {
+            mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+        }
+        p.add(egui::Shape::mesh(mesh));
     }
     for i in 0..pts.len() {
         p.line_segment([pts[i], pts[(i + 1) % pts.len()]], egui::Stroke::new(1.5_f32, col));
