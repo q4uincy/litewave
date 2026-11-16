@@ -28,6 +28,14 @@ pub fn status_note() -> String {
     String::new()
 }
 
+pub fn rate_limit_wait() -> Option<u64> {
+    None
+}
+
+pub fn forget_liked() {}
+
+pub fn clear_liked() {}
+
 #[derive(Clone)]
 pub struct Client;
 

@@ -764,6 +764,8 @@ impl App {
                         let tx = self.sp_tx.clone();
                         let ctx = self.ctx.clone();
                         std::thread::spawn(move || {
+                            // Let the page the user opened first load first; this read then reuses its copy.
+                            std::thread::sleep(Duration::from_secs(3));
                             if let Ok(v) = c.liked() {
                                 let _ = tx.send(SpMsg::Liked(v.into_iter().filter_map(|t| t.spotify_id).collect()));
                                 ctx.request_repaint();
@@ -795,6 +797,7 @@ impl App {
                     }
                     self.cfg.spotify_refresh = Some(refresh);
                     self.cfg.spotify_browse_refresh = browse_refresh;
+                    self.cfg.spotify_welcome_done = true;
                     self.cfg_dirty = true;
                     self.shelves_next = None;
                     self.refresh_top();
@@ -827,7 +830,9 @@ impl App {
                         }
                         // Quietly: no message, Home just keeps what it has (or the library shelves).
                         Err(wait) => {
-                            let secs = wait.max(120);
+                            // A failed Home feed is not worth retrying every 2 minutes: each try also runs
+                            // five searches. Spotify's own wait (if longer) still wins.
+                            let secs = wait.max(900);
                             self.shelves_next = Some(Instant::now() + Duration::from_secs(secs));
                         }
                     }
@@ -836,16 +841,30 @@ impl App {
                     self.recent_busy = false;
                     // On failure (e.g. signed in before the permission existed) keep the old order,
                     // but remember the try so it is not repeated every frame.
-                    let (ids, albums, top, plays) = res.unwrap_or_default();
-                    if !plays.is_empty() {
-                        self.sp_recent_plays = plays;
-                    }
-                    self.sp_recent = Some((Instant::now(), ids));
-                    if !albums.is_empty() {
-                        self.sp_recent_albums = albums;
-                    }
-                    if !top.is_empty() {
-                        self.sp_top_artists = top;
+                    match res {
+                        Ok((ids, albums, top, plays)) => {
+                            if !plays.is_empty() {
+                                self.sp_recent_plays = plays;
+                            }
+                            self.sp_recent = Some((Instant::now(), ids));
+                            if !albums.is_empty() {
+                                self.sp_recent_albums = albums;
+                            }
+                            if !top.is_empty() {
+                                self.sp_top_artists = top;
+                            }
+                            save_recent(
+                                self.sp_recent.as_ref().map(|r| r.1.as_slice()).unwrap_or(&[]),
+                                &self.sp_recent_albums,
+                                &self.sp_top_artists,
+                                &self.sp_recent_plays,
+                            );
+                        }
+                        // Spotify said no (rate limit ...): keep the order and tiles we already have.
+                        Err(_) => {
+                            let old = self.sp_recent.take().map(|r| r.1).unwrap_or_default();
+                            self.sp_recent = Some((Instant::now(), old));
+                        }
                     }
                 }
                 SpMsg::TopSongs(k, res) => {
@@ -908,6 +927,9 @@ impl App {
 
     /// Drops the cached copy of a page and loads it again if it is open.
     fn reload_page(&mut self, node: &Node) {
+        if matches!(node, Node::SpLiked) {
+            spotify::forget_liked();
+        }
         self.page_cache.remove(&format!("{node:?}"));
         if let Some(i) = self.sp_nav.iter().rposition(|p| p.node == *node) {
             let page = self.sp_nav.remove(i);
@@ -946,6 +968,21 @@ impl App {
     /// Reads Spotify's recently played list (at most every 5 minutes). Safe to call every frame.
     pub(crate) fn want_recent(&mut self) {
         let Some(client) = self.sp.clone() else { return };
+        // After a restart (or while Spotify is rate-limiting) show the last copy that was saved.
+        {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static LOADED: AtomicBool = AtomicBool::new(false);
+            if !LOADED.swap(true, Ordering::Relaxed) && self.sp_recent.is_none() && self.sp_recent_plays.is_empty() {
+                if let Some((ids, albums, top, plays)) = load_recent() {
+                    // Dated in the past, so a fresh copy is still asked for right away.
+                    let old = Instant::now().checked_sub(Duration::from_secs(400)).unwrap_or_else(Instant::now);
+                    self.sp_recent = Some((old, ids));
+                    self.sp_recent_albums = albums;
+                    self.sp_top_artists = top;
+                    self.sp_recent_plays = plays;
+                }
+            }
+        }
         let fresh = self
             .sp_recent
             .as_ref()
@@ -1032,9 +1069,26 @@ impl App {
         self.shelves_next = Some(Instant::now() + Duration::from_secs(120));
         let tx = self.sp_tx.clone();
         let ctx = self.ctx.clone();
+        let own_app = !self.cfg.spotify_client_id.trim().is_empty();
+        let play_refresh = self.cfg.spotify_refresh.clone();
         std::thread::spawn(move || {
             let res = match client.access_token() {
-                Ok(token) => session.home_shelves(&token),
+                Ok(token) => {
+                    let first = session.home_shelves(&token);
+                    // A personal app in Development Mode is often refused for Spotify's Home (403). Spotifast
+                    // takes Home from the playback sign-in's app instead, so try that token once.
+                    if let (true, true, Some(r)) = (own_app, matches!(first, Err(0)), play_refresh.as_ref()) {
+                        match spotify::Client::from_refresh(r, spotify::SHARED_CLIENT_ID).and_then(|c| c.access_token()) {
+                            Ok(t2) => {
+                                spotify::note("home shelves: trying again with the playback sign-in's token");
+                                session.home_shelves(&t2)
+                            }
+                            Err(_) => first,
+                        }
+                    } else {
+                        first
+                    }
+                }
                 Err(_) => {
                     spotify::note("home shelves: no Web API token yet");
                     Err(0)
@@ -1046,7 +1100,7 @@ impl App {
             };
             // Like Spotifast: when Spotify's private Home gives no Made for you, look for Spotify's own
             // playlists (Daily Mix, Discover Weekly ...) by search instead.
-            if !shelves.iter().any(|s| s.title == "Made for you") {
+            if !shelves.iter().any(|s| s.title == "Made for you") && spotify::rate_limit_wait().is_none() {
                 // Keep why the private Home feed failed: the search below may add its own line, and the
                 // Home page shows the newest one.
                 let home_note = spotify::last_shelves_note().replace("home shelves: ", "");
@@ -1156,6 +1210,13 @@ impl App {
     }
 
     fn disconnect_spotify(&mut self) {
+        spotify::clear_liked();
+        self.sp_recent_plays.clear();
+        self.sp_recent_albums.clear();
+        self.sp_top_artists.clear();
+        if let Some(p) = recent_cache_path() {
+            let _ = std::fs::remove_file(p);
+        }
         self.sp = None;
         self.sp_session = None;
         self.sp_shelves = None;
@@ -1330,6 +1391,113 @@ impl App {
         }
         if disconnect {
             self.disconnect_spotify();
+        }
+    }
+
+    /// Shown once, on the first launch with Spotify support and no sign-in: the three setup steps in one
+    /// place, like Spotifast's sign-in screen. Skip keeps litewave a plain local player; the Spotify page
+    /// in the sidebar stays available for later.
+    fn first_run_window(&mut self, ctx: &egui::Context) {
+        if !spotify::ENABLED
+            || self.cfg.spotify_welcome_done
+            || self.cfg.spotify_refresh.is_some()
+            || self.sp.is_some()
+            || self.sp_window
+        {
+            return;
+        }
+        // Keep typing in the Client ID box from triggering play / pause shortcuts.
+        self.sp_focus = true;
+        let accent = self.cfg.theme.accent();
+        let weak = ctx.style().visuals.weak_text_color();
+        let id_len = self.cfg.spotify_client_id.trim().len();
+        let id_ok = id_len == 32;
+        let busy = self.sp_interactive;
+        let mut connect = false;
+        let mut skip = false;
+        let mut id_changed = false;
+        egui::Window::new("Connect Spotify")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.label(egui::RichText::new("Welcome to litewave").size(22.0).strong());
+                ui.label(
+                    egui::RichText::new("Spotify is optional. Without it litewave plays your own music files.")
+                        .color(weak),
+                );
+                ui.add_space(10.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(if id_ok { accent } else { weak }, "1.");
+                    ui.label("Create a free Spotify app (the account needs Premium):");
+                });
+                ui.hyperlink_to("Open developer.spotify.com/dashboard", "https://developer.spotify.com/dashboard");
+                ui.label("Add this exact Redirect URI to the app and tick Web API:");
+                ui.monospace(spotify::REDIRECT_URI);
+                ui.hyperlink_to("Step-by-step guide with pictures", GUIDE_URL);
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.colored_label(if id_ok { accent } else { weak }, "2.");
+                    ui.label("Paste the app's Client ID (Ctrl+V):");
+                });
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.cfg.spotify_client_id)
+                            .hint_text("32-character Client ID")
+                            .desired_width(420.0),
+                    )
+                    .changed()
+                {
+                    id_changed = true;
+                }
+                if id_len == 0 {
+                    ui.weak("It is on the app's page in the dashboard.");
+                } else if id_ok {
+                    ui.colored_label(accent, "Looks right.");
+                } else {
+                    ui.weak(format!("{id_len} of 32 characters."));
+                }
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.colored_label(weak, "3.");
+                    ui.label("Sign in, then approve in the browser (twice: browsing, then playback).");
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let label = if busy { "Waiting for the browser..." } else { "Sign in with Spotify" };
+                    if ui
+                        .add_enabled(
+                            id_ok && !busy,
+                            egui::Button::new(egui::RichText::new(label).color(egui::Color32::BLACK)).fill(accent),
+                        )
+                        .clicked()
+                    {
+                        connect = true;
+                    }
+                    if ui.button("Skip for now").clicked() {
+                        skip = true;
+                    }
+                });
+                if !self.sp_status.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(self.sp_status.clone()).size(12.0).color(weak));
+                }
+            });
+        if id_changed {
+            // The saved browsing sign-in belongs to the old Client ID.
+            self.cfg.spotify_browse_refresh = None;
+            self.cfg_dirty = true;
+        }
+        if connect {
+            self.start_spotify(None);
+        }
+        if skip {
+            self.cfg.spotify_welcome_done = true;
+            self.cfg_dirty = true;
         }
     }
 
@@ -2655,6 +2823,7 @@ impl eframe::App for App {
         }
 
         self.spotify_window(ctx);
+        self.first_run_window(ctx);
         self.ipod_search_ui(ctx);
         self.themes_window(ctx);
         self.check_sleep(ctx);
@@ -2903,4 +3072,109 @@ fn load_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     let size = [img.width() as usize, img.height() as usize];
     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
     Some(ctx.load_texture("litewave-logo", color, egui::TextureOptions::LINEAR))
+}
+
+
+// ---- saved recent plays -------------------------------------------------------------------------
+// Home's quick tiles and the "Recently played" order of your playlists come from Spotify's recently played
+// list. A copy is kept on disk so they are still there after a restart and while Spotify is rate-limiting.
+
+fn recent_cache_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("litewave").join("recent.json"))
+}
+
+fn entries_json(v: &[spotify::Entry]) -> serde_json::Value {
+    serde_json::Value::Array(
+        v.iter()
+            .map(|e| serde_json::json!({"id": e.id, "name": e.name, "sub": e.sub, "art": e.art}))
+            .collect(),
+    )
+}
+
+fn entries_from(v: &serde_json::Value) -> Vec<spotify::Entry> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    Some(spotify::Entry {
+                        id: x["id"].as_str()?.to_string(),
+                        name: x["name"].as_str()?.to_string(),
+                        sub: x["sub"].as_str().unwrap_or("").to_string(),
+                        art: x["art"].as_str().map(|s| s.to_string()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_recent(
+    ids: &[String],
+    albums: &[spotify::Entry],
+    top: &[spotify::Entry],
+    plays: &[spotify::RecentPlay],
+) {
+    let Some(path) = recent_cache_path() else { return };
+    let plays_json: Vec<serde_json::Value> = plays
+        .iter()
+        .filter_map(|p| {
+            let t = &p.track;
+            let id = t.spotify_id.as_ref()?;
+            Some(serde_json::json!({
+                "ctx": p.context,
+                "id": id,
+                "title": t.title,
+                "artist": t.artist,
+                "album": t.album,
+                "album_id": t.album_id,
+                "artist_id": t.artist_id,
+                "art": t.art_url,
+                "ms": t.duration.as_millis() as u64,
+                "explicit": t.explicit,
+            }))
+        })
+        .collect();
+    let v = serde_json::json!({
+        "ids": ids,
+        "albums": entries_json(albums),
+        "top": entries_json(top),
+        "plays": plays_json,
+    });
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, v.to_string());
+}
+
+#[allow(clippy::type_complexity)]
+fn load_recent() -> Option<(Vec<String>, Vec<spotify::Entry>, Vec<spotify::Entry>, Vec<spotify::RecentPlay>)> {
+    let text = std::fs::read_to_string(recent_cache_path()?).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let ids: Vec<String> = v["ids"]
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+        .collect();
+    let plays: Vec<spotify::RecentPlay> = v["plays"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    let mut t = crate::library::Track::spotify(
+                        x["id"].as_str()?,
+                        x["title"].as_str().unwrap_or(""),
+                        x["artist"].as_str().unwrap_or(""),
+                        x["album"].as_str().unwrap_or(""),
+                        x["ms"].as_u64().unwrap_or(0),
+                        x["art"].as_str().map(|s| s.to_string()),
+                    );
+                    t.album_id = x["album_id"].as_str().map(|s| s.to_string());
+                    t.artist_id = x["artist_id"].as_str().map(|s| s.to_string());
+                    t.explicit = x["explicit"].as_bool().unwrap_or(false);
+                    Some(spotify::RecentPlay { context: x["ctx"].as_str().map(|s| s.to_string()), track: t })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((ids, entries_from(&v["albums"]), entries_from(&v["top"]), plays))
 }

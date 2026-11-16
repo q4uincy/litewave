@@ -34,6 +34,8 @@ pub struct Config {
     pub spotify_refresh: Option<String>,
     /// Refresh token for browsing, issued to `spotify_client_id` (the user's own Spotify app).
     pub spotify_browse_refresh: Option<String>,
+    /// The first-run Spotify sign-in window has been used or skipped, so it is not shown again.
+    pub spotify_welcome_done: bool,
     pub theme: Theme,
     /// Wallpaper decode size: 0 low (1280x720), 1 medium (1920x1080), 2 high (2560x1440), 3 ultra (3840x2160).
     pub wallpaper_quality: u8,
@@ -95,6 +97,7 @@ impl Default for Config {
             spotify_client_id: String::new(),
             spotify_refresh: None,
             spotify_browse_refresh: None,
+            spotify_welcome_done: false,
             theme: Theme::default(),
             wallpaper_quality: 1,
             ipod_skin: 0,

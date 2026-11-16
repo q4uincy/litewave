@@ -1335,9 +1335,10 @@ impl App {
                         ui.add_space(8.0);
                         // Search inside the library, and Spotify's "Recents" sort switch.
                         let qid = egui::Id::new("lib_query");
-                        let sid = egui::Id::new("lib_alpha");
+                        let sid = egui::Id::new("lib_sort");
                         let mut query: String = ui.data(|d| d.get_temp::<String>(qid)).unwrap_or_default();
-                        let mut alpha: bool = ui.data(|d| d.get_temp::<bool>(sid)).unwrap_or(false);
+                        // 0 = Spotify's list order, 1 = recently played (default, like Spotify), 2 = alphabetical.
+                        let mut sort: u8 = ui.data(|d| d.get_temp::<u8>(sid)).unwrap_or(1);
                         let oid = egui::Id::new("lib_search_open");
                         let mid = egui::Id::new("lib_mine");
                         let has_me = !self.sp_user.is_empty();
@@ -1345,9 +1346,14 @@ impl App {
                         let mut mine: bool = ui.data(|d| d.get_temp::<bool>(mid)).unwrap_or(false);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
-                            let label = if alpha { "Alphabetical" } else { "Recently played" };
+                            let label = match sort {
+                                1 => "Recently played",
+                                2 => "Alphabetical",
+                                _ => "Your order",
+                            };
                             if side_pill(ui, label, true, false, bg, text).clicked() {
-                                alpha = !alpha;
+                                // Recently played -> Alphabetical -> Your order -> back.
+                                sort = (sort + 1) % 3;
                             }
                             if has_me && side_pill(ui, "By You", false, mine, bg, text).clicked() {
                                 mine = !mine;
@@ -1369,7 +1375,7 @@ impl App {
                         ctx.data_mut(|d| d.insert_temp(egui::Id::new("lib_search_focus"), lib_focus));
                         ui.data_mut(|d| {
                             d.insert_temp(qid, query.clone());
-                            d.insert_temp(sid, alpha);
+                            d.insert_temp(sid, sort);
                             d.insert_temp(oid, open);
                             d.insert_temp(mid, mine);
                         });
@@ -1390,9 +1396,9 @@ impl App {
                             .map(|(i, _)| Some(i))
                             .take(300)
                             .collect();
-                        if alpha {
+                        if sort == 2 {
                             rows.sort_by_key(|r| r.map(|i| items[i].label.to_lowercase()));
-                        } else {
+                        } else if sort == 1 {
                             // "Recents": what you played last first, like Spotify (stable sort).
                             rows.sort_by_key(|r| {
                                 r.map_or(usize::MAX, |i| match &items[i].kind {

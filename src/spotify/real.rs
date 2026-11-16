@@ -44,6 +44,72 @@ const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const MAX_PAGES: usize = 200;
 
 static NULL: Value = Value::Null;
+
+/// Spotify told us to stop calling the Web API until this moment. Every request checks it, so one 429
+/// pauses all of them instead of each thread retrying on its own (which only makes Spotify wait longer).
+static COOLDOWN: Mutex<Option<Instant>> = Mutex::new(None);
+/// Liked Songs, read once and reused (it can be thousands of songs). The flag marks a copy that Refresh
+/// asked to replace; it is still handed out while Spotify is rate-limiting us.
+static LIKED_CACHE: Mutex<Option<(Instant, bool, Vec<Track>)>> = Mutex::new(None);
+/// Held while Liked Songs is being read, so two screens asking at once make one set of requests.
+static LIKED_LOCK: Mutex<()> = Mutex::new(());
+
+fn cooldown_left() -> Option<u64> {
+    let g = COOLDOWN.lock().ok()?;
+    let until = (*g)?;
+    let now = Instant::now();
+    if until > now {
+        Some((until - now).as_secs() + 1)
+    } else {
+        None
+    }
+}
+
+fn start_cooldown(secs: u64) {
+    if let Ok(mut g) = COOLDOWN.lock() {
+        let until = Instant::now() + Duration::from_secs(secs);
+        // Never shorten a wait that is already running.
+        if (*g).map_or(true, |old| until > old) {
+            *g = Some(until);
+        }
+    }
+}
+
+/// Seconds litewave is holding back Web API requests because Spotify asked it to (None = not waiting).
+pub fn rate_limit_wait() -> Option<u64> {
+    cooldown_left()
+}
+
+/// Makes the next read of Liked Songs go to Spotify again (after Refresh, a like or a sign-out).
+pub fn forget_liked() {
+    if let Ok(mut g) = LIKED_CACHE.lock() {
+        if let Some(entry) = g.as_mut() {
+            entry.1 = true;
+        }
+    }
+}
+
+/// Wipes the saved Liked Songs completely (sign-out: it belongs to the old account).
+pub fn clear_liked() {
+    if let Ok(mut g) = LIKED_CACHE.lock() {
+        *g = None;
+    }
+}
+
+fn wait_text(secs: u64) -> String {
+    if secs >= 90 {
+        format!("about {} min", (secs + 59) / 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+fn retry_after(r: &ureq::Response) -> u64 {
+    r.header("Retry-After")
+        .and_then(|h| h.parse::<u64>().ok())
+        .unwrap_or(5)
+        .clamp(1, 24 * 3600)
+}
 static OPT_QUALITY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
 static OPT_NORMALISE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static OPT_GAPLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -425,9 +491,24 @@ impl Client {
         Ok(access)
     }
 
+    /// What to tell the user while Spotify is rate-limiting.
+    fn rate_text(&self, secs: u64) -> String {
+        if self.own {
+            format!(
+                "Spotify is rate-limiting your app: it asked litewave to wait {}. litewave has paused its Spotify requests so the limit can clear. Press Refresh after that.",
+                wait_text(secs)
+            )
+        } else {
+            "Spotify rejects browsing through the shared sign-in. Open the Spotify window and add your own Client ID.".to_string()
+        }
+    }
+
     fn get(&self, url: &str) -> Result<Value, String> {
+        if let Some(left) = cooldown_left() {
+            return Err(self.rate_text(left));
+        }
         let token = self.access_token()?;
-        for attempt in 0..6 {
+        for attempt in 0..3 {
             match agent()
                 .get(url)
                 .set("Authorization", &format!("Bearer {token}"))
@@ -438,20 +519,15 @@ impl Client {
                     return r.into_json::<Value>().map_err(|e| e.to_string());
                 }
                 Err(ureq::Error::Status(429, r)) => {
-                    let wait = r
-                        .header("Retry-After")
-                        .and_then(|h| h.parse::<u64>().ok())
-                        .unwrap_or(3)
-                        .clamp(1, 30);
-                    if attempt == 5 {
+                    let wait = retry_after(&r);
+                    // A short wait is waited out here. A long one is not: retrying every 30 s while
+                    // Spotify asked for minutes keeps the limit going, so every request rests instead.
+                    if wait > 20 || attempt == 2 {
                         set_note("");
-                        return Err(if self.own {
-                            format!("Spotify is rate-limiting your app (it asked us to wait {wait}s). Wait a minute, then press Refresh.")
-                        } else {
-                            "Spotify rejects browsing through the shared sign-in. Open the Spotify window and add your own Client ID.".to_string()
-                        });
+                        start_cooldown(wait.max(30));
+                        return Err(self.rate_text(wait.max(30)));
                     }
-                    set_note(&format!("Spotify is busy. Retrying in {wait}s ({} of 5)...", attempt + 1));
+                    set_note(&format!("Spotify is busy. Retrying in {wait}s ({} of 3)...", attempt + 1));
                     std::thread::sleep(Duration::from_secs(wait));
                 }
                 Err(ureq::Error::Status(403, _)) => {
@@ -494,7 +570,7 @@ impl Client {
                 Some(next) => {
                     url = next.to_string();
                     // Spread long listings out so a big library does not trip the rate limit.
-                    std::thread::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(200));
                 }
                 None => break,
             }
@@ -504,6 +580,9 @@ impl Client {
 
     /// POST / PUT / DELETE with an optional JSON body. Spotify answers many of these with an empty body.
     fn send(&self, method: &str, url: &str, body: Option<Value>) -> Result<Value, String> {
+        if let Some(left) = cooldown_left() {
+            return Err(format!("Spotify is busy (rate limit). Try again in {}.", wait_text(left)));
+        }
         let token = self.access_token()?;
         let req = agent()
             .request(method, url)
@@ -519,7 +598,11 @@ impl Client {
             }
             Err(ureq::Error::Status(403, _)) => Err("Spotify refused the change (403). You can only edit playlists you own. If this is your first edit, open the Spotify window and press Sign in again so litewave can ask for edit permission.".to_string()),
             Err(ureq::Error::Status(401, _)) => Err("Spotify sign-in expired. Open the Spotify window and sign in again.".to_string()),
-            Err(ureq::Error::Status(429, _)) => Err("Spotify is busy (rate limit). Try again in a minute.".to_string()),
+            Err(ureq::Error::Status(429, r)) => {
+                let wait = retry_after(&r).max(30);
+                start_cooldown(wait);
+                Err(format!("Spotify is busy (rate limit). Try again in {}.", wait_text(wait)))
+            }
             Err(ureq::Error::Status(code, r)) => Err(api_error(code, r)),
             Err(e) => Err(format!("Network error: {e}")),
         }
@@ -719,13 +802,21 @@ impl Client {
     /// (Spotify's `PUT /me/library` takes URIs of any kind).
     pub fn library_add(&self, uris: &[String]) -> Result<(), String> {
         let url = format!("{API}/me/library?uris={}", urlencoding::encode(&uris.join(",")));
-        self.send("PUT", &url, None).map(|_| ())
+        let r = self.send("PUT", &url, None).map(|_| ());
+        if r.is_ok() {
+            forget_liked();
+        }
+        r
     }
 
     /// Removes from the library / unfollows. Also how a playlist you own is deleted.
     pub fn library_remove(&self, uris: &[String]) -> Result<(), String> {
         let url = format!("{API}/me/library?uris={}", urlencoding::encode(&uris.join(",")));
-        self.send("DELETE", &url, None).map(|_| ())
+        let r = self.send("DELETE", &url, None).map(|_| ());
+        if r.is_ok() {
+            forget_liked();
+        }
+        r
     }
 
     pub fn playlists(&self) -> Result<Vec<Entry>, String> {
@@ -835,11 +926,26 @@ impl Client {
     }
 
     pub fn liked(&self) -> Result<Vec<Track>, String> {
+        // One read at a time: a second caller waits here and then finds the copy the first one made.
+        let _turn = LIKED_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(g) = LIKED_CACHE.lock() {
+            if let Some((at, stale, v)) = g.as_ref() {
+                let fresh = !*stale && at.elapsed() < Duration::from_secs(300);
+                // While Spotify is rate-limiting, an older copy beats an error.
+                if fresh || cooldown_left().is_some() {
+                    return Ok(v.clone());
+                }
+            }
+        }
         let items = self.collect(format!("{API}/me/tracks?limit=50"), None)?;
-        Ok(items
+        let v: Vec<Track> = items
             .iter()
             .filter_map(|it| track_from(&it["track"], "", None))
-            .collect())
+            .collect();
+        if let Ok(mut g) = LIKED_CACHE.lock() {
+            *g = Some((Instant::now(), false, v.clone()));
+        }
+        Ok(v)
     }
 
     pub fn saved_albums(&self) -> Result<Vec<Entry>, String> {
